@@ -1,0 +1,22 @@
+# ior sample dictionary: IT-domain entries (M0 smoke test).
+# Format: pinyin<TAB>hanzi<TAB>freq  (freq optional, default 1)
+kai'fa	开发	500
+cheng'xu	程序	400
+dai'ma	代码	450
+bian'yi	编译	200
+ce'shi	测试	420
+han'shu	函数	260
+bian'liang	变量	240
+jie'kou	接口	300
+shu'ju'ku	数据库	380
+kai'yuan	开源	280
+she'qu	社区	150
+ban'ben	版本	320
+geng'xin	更新	300
+wen'dang	文档	180
+jiao'ben	脚本	160
+ruan'jian	软件	350
+ying'jian	硬件	200
+xing'neng	性能	260
+nei'cun	内存	220
+wang'luo	网络	330

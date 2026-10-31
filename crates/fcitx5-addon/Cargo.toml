@@ -1,0 +1,15 @@
+[package]
+name = "fcitx5-ior"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "ior fcitx5 addon: C ABI bridge (Rust) + thin C++ shell for fcitx5"
+
+[lib]
+name = "ior_engine"
+# rlib is required so examples/tests can link the crate in-tree; the C ABI
+# consumers (CMake shell) use the staticlib/cdylib artifacts.
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[dependencies]
+engine-core = { path = "../engine-core" }

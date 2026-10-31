@@ -1,0 +1,17 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/engine-core",
+    "crates/dict-tools",
+    "crates/fcitx5-addon",
+    "crates/voice",
+    "crates/llm",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[profile.release]
+lto = "thin"

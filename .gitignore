@@ -1,0 +1,7 @@
+/target
+/cpp/build
+crates/fcitx5-addon/cpp/build
+data/models/
+*.onnx
+*.gguf
+*.ior

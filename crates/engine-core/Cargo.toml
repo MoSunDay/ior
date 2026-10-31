@@ -1,0 +1,8 @@
+[package]
+name = "engine-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "ior input-method engine: segmentation, dictionary, decoding, user learning (pure functions, headless)"
+
+[dependencies]

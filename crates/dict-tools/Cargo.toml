@@ -1,0 +1,16 @@
+[package]
+name = "dict-tools"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Dictionary build/convert/inspect tools for ior (.tsv <-> .ior binary)"
+
+[lib]
+name = "dict_tools"
+path = "src/lib.rs"
+
+[[bin]]
+name = "dict-tools"
+path = "src/main.rs"
+
+[dependencies]
