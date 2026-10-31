@@ -15,6 +15,7 @@
 //! uint32_t    ior_engine_candidate_count(const IorEngineC*);
 //! const char* ior_engine_candidate(const IorEngineC*, uint32_t index);
 //! const char* ior_engine_take_commit(IorEngineC*);
+//! uint32_t   ior_engine_abi_version(void);
 //! ```
 //!
 //! # Contract
@@ -109,6 +110,13 @@ fn empty_ptr() -> *const c_char {
 
 /// Creates an engine over the builtin dictionary with the default config.
 /// Returns null only on allocation failure.
+/// ABI version of this C interface. Hosts may call it right after
+/// `dlopen`/load to refuse mismatched shells. Bump on any breaking change.
+#[no_mangle]
+pub extern "C" fn ior_engine_abi_version() -> u32 {
+    1
+}
+
 #[no_mangle]
 pub extern "C" fn ior_engine_new() -> *mut IorEngine {
     Box::into_raw(Box::new(engine_state::new_engine()))
@@ -217,6 +225,12 @@ pub unsafe extern "C" fn ior_engine_take_commit(engine: *mut IorEngine) -> *cons
     }
 }
 
+/// Test shim: `ior_engine_abi_version` is safe to call directly.
+#[cfg(test)]
+fn unsafe_or_safe_abi() -> u32 {
+    ior_engine_abi_version()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -241,6 +255,11 @@ mod tests {
     }
 
     const NIHAO: [u32; 5] = [0x6E, 0x69, 0x68, 0x61, 0x6F]; // n i h a o
+
+    #[test]
+    fn abi_version_is_one() {
+        assert_eq!(unsafe_or_safe_abi(), 1);
+    }
 
     #[test]
     fn full_flow_nihao() {
