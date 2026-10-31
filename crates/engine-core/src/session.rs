@@ -116,7 +116,7 @@ fn handle_digit(s: &mut Session, ch: char) -> ProcessResult {
 }
 
 /// Space/enter: commit the top candidate, or pass the raw letters through
-/// verbatim when nothing can be decoded.
+/// when nothing can be decoded (typed `'` separators are dropped).
 fn handle_commit_or_passthrough(s: &mut Session) -> ProcessResult {
     if s.raw.is_empty() {
         return ProcessResult::Forwarded;
@@ -125,7 +125,7 @@ fn handle_commit_or_passthrough(s: &mut Session) -> ProcessResult {
     match cands.first() {
         Some(cand) => commit_candidate(s, cand),
         None => {
-            let text = s.raw.clone();
+            let text = s.raw.replace('\'', "");
             s.raw.clear();
             ProcessResult::Committed(text)
         }
