@@ -1,8 +1,8 @@
 // ior fcitx5 addon: thin C++ glue around the Rust engine (C ABI).
 //
-// The engine itself lives in Rust (crates/fcitx5-addon/src, crate
-// `ior_engine`); this file only declares the mirrored C API and the fcitx5
-// integration classes. Written for fcitx5 5.1.x; see cpp/README.md.
+// The engine lives in Rust (crates/fcitx5-addon/src, crate `ior_engine`);
+// this header mirrors the C API and declares the fcitx5 integration
+// classes. Written against fcitx5 5.1.7 headers; see cpp/README.md.
 #ifndef FCITX5_IOR_IORADDON_H_
 #define FCITX5_IOR_IORADDON_H_
 
@@ -36,44 +36,56 @@ const char* ior_engine_preedit(const IorEngineC* engine);
 uint32_t ior_engine_candidate_count(const IorEngineC* engine);
 const char* ior_engine_candidate(const IorEngineC* engine, uint32_t index);
 const char* ior_engine_take_commit(IorEngineC* engine);
+uint32_t ior_engine_abi_version(void);
 } // extern "C"
 
 #include <fcitx/addonfactory.h>
+#include <fcitx/candidatelist.h>
 #include <fcitx/inputmethodengine.h>
-#include <fcitx/instance.h>
+#include <fcitx/text.h>
 
 namespace fcitx {
 class InputContext;
-class InputMethodEntry;
 class KeyEvent;
 } // namespace fcitx
 
-// fcitx5 input method engine backed by the Rust ior engine.
-//
-// M0 simplification: a single IorEngineC instance is shared by all input
-// contexts (one user, one machine, one preedit at a time). Per-input-context
-// state (e.g. a map from InputContext to engine) lands in M1.
+// One shared engine instance across all input contexts is an accepted M0
+// simplification; per-IC state lands in M1 (see docs/M0-FRONTEND-TEST.md).
 class IorEngine final : public fcitx::InputMethodEngine {
 public:
-    explicit IorEngine(fcitx::Instance* instance);
+    IorEngine();
     ~IorEngine() override;
 
     void keyEvent(const fcitx::InputMethodEntry& entry,
                   fcitx::KeyEvent& keyEvent) override;
     void reset(const fcitx::InputMethodEntry& entry,
-               fcitx::InputContext& ic) override;
+               fcitx::InputContextEvent& event) override;
 
-private:
-    // Repaints preedit and candidate list for `ic` from the Rust engine.
+    // Refreshes preedit + candidate list from the engine state. Public so
+    // candidate words can refresh the panel after a mouse selection.
     void updateUI(fcitx::InputContext& ic);
 
-    fcitx::Instance* instance_;
-    IorEngineC* raw_ = nullptr;
+private:
+    IorEngineC* raw_;
+};
+
+// Selectable candidate word; select() routes a synthetic digit key through
+// the engine so commit/learn logic stays in Rust.
+class IorCandidateWord final : public fcitx::CandidateWord {
+public:
+    IorCandidateWord(fcitx::Text text, IorEngineC* engine, IorEngine* owner,
+                     uint32_t index);
+    void select(fcitx::InputContext* inputContext) const override;
+
+private:
+    IorEngineC* engine_;
+    IorEngine* owner_;
+    uint32_t index_;
 };
 
 class IorEngineFactory final : public fcitx::AddonFactory {
 public:
-    fcitx::AddonInstance* create(fcitx::Instance* instance) override;
+    fcitx::AddonInstance* create(fcitx::AddonManager* manager) override;
 };
 
 #endif // FCITX5_IOR_IORADDON_H_

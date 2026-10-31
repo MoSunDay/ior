@@ -1,21 +1,25 @@
-// ior fcitx5 addon: glue only. All IME logic (segmentation, dictionary,
-// candidates, learning) runs inside the Rust engine behind the C ABI.
+// ior fcitx5 addon: glue-only implementation. All IM logic is in Rust and
+// reached through the C ABI declared in ioraddon.h.
 #include "ioraddon.h"
 
+#include <fcitx-utils/key.h>
+#include <fcitx/event.h>
 #include <fcitx/inputcontext.h>
 #include <fcitx/inputpanel.h>
-#include <fcitx/key.h>
-#include <fcitx/text.h>
-#include <fcitx/candidatelist.h>
 
 #include <memory>
 #include <string>
 #include <vector>
 
-IorEngine::IorEngine(fcitx::Instance* instance) : instance_(instance) {
-    raw_ = ior_engine_new();
+namespace {
+// Keysyms for keys that may start a composition. Everything else is
+// forwarded untouched while no composition is active.
+bool mayStartComposition(uint32_t sym) {
+    return (sym >= 'a' && sym <= 'z') || (sym >= 'A' && sym <= 'Z');
 }
+} // namespace
 
+IorEngine::IorEngine() : raw_(ior_engine_new()) {}
 IorEngine::~IorEngine() { ior_engine_free(raw_); }
 
 void IorEngine::keyEvent(const fcitx::InputMethodEntry& /*entry*/,
@@ -23,30 +27,24 @@ void IorEngine::keyEvent(const fcitx::InputMethodEntry& /*entry*/,
     if (raw_ == nullptr || keyEvent.isRelease()) {
         return;
     }
-
     auto* ic = keyEvent.inputContext();
-    const auto sym = static_cast<uint32_t>(keyEvent.key().sym());
-
-    // Stay quiet unless we are composing or the key could start composing.
-    const bool composing = (*ior_engine_preedit(raw_) != '\0');
-    const bool isLetter = (sym >= 'A' && sym <= 'Z') ||
-                          (sym >= 'a' && sym <= 'z');
-    if (!composing && !isLetter) {
+    if (ic == nullptr) {
         return;
+    }
+    const auto sym = static_cast<uint32_t>(keyEvent.key().sym());
+    if (ior_engine_preedit(raw_)[0] == '\0' && !mayStartComposition(sym)) {
+        return; // idle: let every non-letter key reach the app
     }
 
     const auto result = ior_engine_process_key(raw_, sym);
-    if (result == 0) {
-        // Not ours: forward. If a leftover preedit existed (e.g. the key was
-        // an uppercase letter), drop it and repaint before forwarding.
-        if (*ior_engine_preedit(raw_) != '\0') {
+    if (result == 0) { // not handled: forward, drop any stale composition
+        if (ior_engine_preedit(raw_)[0] != '\0') {
             ior_engine_reset(raw_);
             updateUI(*ic);
         }
         return;
     }
-
-    keyEvent.filter();
+    keyEvent.filterAndAccept();
     updateUI(*ic);
     if (result == 2) {
         const char* text = ior_engine_take_commit(raw_);
@@ -57,11 +55,11 @@ void IorEngine::keyEvent(const fcitx::InputMethodEntry& /*entry*/,
 }
 
 void IorEngine::reset(const fcitx::InputMethodEntry& /*entry*/,
-                      fcitx::InputContext& ic) {
+                      fcitx::InputContextEvent& event) {
     if (raw_ != nullptr) {
         ior_engine_reset(raw_);
     }
-    updateUI(ic);
+    updateUI(*event.inputContext());
 }
 
 void IorEngine::updateUI(fcitx::InputContext& ic) {
@@ -86,8 +84,9 @@ void IorEngine::updateUI(fcitx::InputContext& ic) {
         }
 
         auto list = std::make_unique<fcitx::CommonCandidateList>();
-        for (const auto& word : words) {
-            list->append<fcitx::CommonCandidateWord>(fcitx::Text(word));
+        for (uint32_t i = 0; i < words.size(); ++i) {
+            list->append(std::make_unique<IorCandidateWord>(
+                fcitx::Text(words[i]), raw_, this, i));
         }
         static const std::vector<fcitx::Key> selectionKeys = {
             fcitx::Key(FcitxKey_1), fcitx::Key(FcitxKey_2),
@@ -106,8 +105,29 @@ void IorEngine::updateUI(fcitx::InputContext& ic) {
     ic.updateUserInterface(fcitx::UserInterfaceComponent::InputPanel);
 }
 
-fcitx::AddonInstance* IorEngineFactory::create(fcitx::Instance* instance) {
-    return new IorEngine(instance);
+IorCandidateWord::IorCandidateWord(fcitx::Text text, IorEngineC* engine,
+                                   IorEngine* owner, uint32_t index)
+    : fcitx::CandidateWord(std::move(text)), engine_(engine), owner_(owner),
+      index_(index) {}
+
+void IorCandidateWord::select(fcitx::InputContext* ic) const {
+    if (engine_ == nullptr || ic == nullptr) {
+        return;
+    }
+    // Reuse the engine's digit-selection path (keysym '1'..'9', '0').
+    const uint32_t sym =
+        index_ < 9 ? static_cast<uint32_t>('1') + index_ : static_cast<uint32_t>('0');
+    if (ior_engine_process_key(engine_, sym) == 2) {
+        const char* text = ior_engine_take_commit(engine_);
+        if (*text != '\0') {
+            ic->commitString(text);
+        }
+    }
+    owner_->updateUI(*ic);
 }
 
-FCITX_ADDON_FACTORY_V2(ior, IorEngineFactory);
+fcitx::AddonInstance* IorEngineFactory::create(fcitx::AddonManager* /*m*/) {
+    return new IorEngine();
+}
+
+FCITX_ADDON_FACTORY(IorEngineFactory);

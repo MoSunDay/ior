@@ -1,104 +1,86 @@
-# ior fcitx5 插件（M0）
+# ior fcitx5 addon（C++ 薄壳 + 构建安装）
 
-本目录是 ior 输入法引擎的 fcitx5 宿主层：**C++ 壳 + CMake 构建**。
-所有输入法逻辑（音节切分、词典、候选、用户词学习）都在 Rust 侧
-（`crates/engine-core` 与 `crates/fcitx5-addon/src`，crate `ior_engine`），
-C++ 只做事件转发与界面刷新的胶水。
+薄壳只做胶水：把 fcitx5 5.1.x 的按键/焦点事件经 C ABI 转给 Rust 引擎，
+再把 preedit / 候选 / 上屏文本刷回输入面板。全部输入法逻辑在
+`crates/fcitx5-addon/src`（crate `ior_engine`）。
 
-> 说明：本壳针对 **fcitx5 5.1.x** 编写；本机没有 fcitx5 开发头文件和
-> cmake，因此本目录只交付源码与构建文件，**不在这台机器上编译**。
-> Rust 侧（C ABI）在本机完整编译并通过测试。
+已在 fcitx5 **5.1.7**（Ubuntu noble）编译并三前端实测通过，
+见 `docs/M0-FRONTEND-TEST.md`。
 
-## 前置条件
-
-- Rust（stable，cargo ≥ 1.70）
-- libfcitx5-core-dev、libfcitx5-utils-dev（fcitx5 ≥ 5.1）
-- cmake ≥ 3.16、ninja（或 make）
-- fcitx5 运行时（用于实测）
-
-Debian/Ubuntu 示例：
+## 前置依赖
 
 ```sh
-sudo apt install build-essential cmake ninja-build \
-     libfcitx5-core-dev libfcitx5-utils-dev fcitx5
+sudo apt-get install -y --no-install-recommends \
+  libfcitx5core-dev libfcitx5utils-dev libfcitx5config-dev \
+  cmake ninja-build pkg-config
 ```
 
-## 构建
-
-在 `crates/fcitx5-addon/cpp` 目录下：
+## 构建与安装（系统级，实测路径）
 
 ```sh
-cargo build -p fcitx5-ior --release
-cmake -B build -G Ninja ..
-cmake --build build
+cd crates/fcitx5-addon/cpp
+cmake -S . -B build -G Ninja -DCMAKE_INSTALL_PREFIX=/usr
+cmake --build build            # 自动先 cargo build --release -p fcitx5-ior
 sudo cmake --install build
 ```
 
-`cmake` 会先通过 `add_custom_target(ior_rust)` 调 `cargo build --release
--p fcitx5-ior` 生成 `target/release/libior_engine.a`（在 workspace 根的
-`target/` 下），再把它链接进模块 `ior.so`。可用缓存变量覆盖路径：
+安装布局（fcitx5 约定）：
 
-- `-DIOR_RUST_DIR=...`：fcitx5-ior 的 cargo 包目录（默认 `..`）
-- `-DIOR_WORKSPACE_DIR=...`：workspace 根，即 `target/` 的父目录
-  （默认 `../..`）
+| 文件 | 目标 | 说明 |
+|------|------|------|
+| `libior.so` | `/usr/lib/<arch>/fcitx5/` | 模块名必须带 `lib` 前缀（`Library=libior`） |
+| `ior.conf` | `/usr/share/fcitx5/addon/` | addon 元数据 |
+| `inputmethod/ior.conf` | `/usr/share/fcitx5/inputmethod/` | 输入法注册 |
 
-## 不安装的本地测试
+注意：`cmake --install --prefix` 改不动 configure 期固化的安装目录，
+请务必在 configure 时传 `-DCMAKE_INSTALL_PREFIX`。用户级
+（`~/.local`）安装不可用：`~/.local/lib/fcitx5` 不在 fcitx5 5.1.7 的
+addon 库搜索路径中。
 
-```sh
-# 方式一：直接指向构建产物目录
-FCITX_ADDON_DIRS=/abs/path/to/crates/fcitx5-addon/cpp/build fcitx5 -r --replace
-```
-
-或把 `build/ior.so`、`build/ior.conf` 复制到
-`~/.local/share/fcitx5/addon`（各发行版 addons 目录以
-`fcitx5-diagnose` 输出为准），`inputmethod/ior.conf` 复制到
-`~/.local/share/fcitx5/inputmethod`，然后：
+## 启用与快速验证
 
 ```sh
-fcitx5 -r --replace
+fcitx5 --replace &             # 重载 addon（或注销重登）
+fcitx5-remote -s ior           # 切到 ior（也可用 fcitx5-configtool）
+# GTK3 / Qt5 / XIM 三前端任意应用中输入：
+#   nihao + Space → 你好    xian + 2 → 选次候选    vk + Space → 原样透传
 ```
 
-## 启用 "ior"
-
-1. 运行 `fcitx5-configtool`（配置工具）。
-2. 「输入法」→「添加输入法」→ 取消勾选「仅显示当前语言」→ 找到
-   `ior`（拼音）→ 添加，移动到列表里。
-3. 用 Ctrl+Space 切换到 ior。
+无头/无 X 环境用示例自测引擎链路：
+`cargo run -p fcitx5-ior --example m0_demo`。
 
 ## 验证清单（按前端逐个测）
 
 | 前端 | 验证方法 | 期望 |
-| --- | --- | --- |
-| GTK3/GTK4 | `gtk3-demo` 的文本框 | 输入 `nihao` 出现 preedit `ni'hao`、候选含「你好」，空格上屏 |
-| Qt5/Qt6 | 任意 Qt 应用（如 `kdialog --inputbox test`） | 同上；数字键 1-9/0 选词 |
-| XIM | `xterm`（需 `XMODIFIERS=@im=fcitx`） | 同上；退格缩短 preedit，Esc 清空 |
+|------|----------|------|
+| GTK3 | `zenity --entry`（`GTK_IM_MODULE=fcitx`） | `nihao` preedit `ni'hao`，候选含「你好」，空格上屏 |
+| Qt5 | `kdialog --inputbox t`（`QT_IM_MODULE=fcitx`） | 同上；数字 1-9/0 选词；候选可鼠标点选提交 |
+| XIM | `xterm`（`XMODIFIERS=@im=fcitx`） | 同上；退格缩短 preedit，Esc 清空 |
 
-补充检查：
+补充：`xian` 应出「现 / 先 / 西安」（音节歧义）；预编辑激活时 Enter
+被消费用于上屏（预期行为）。
 
-- 输入 `xian` 应出现「现 / 先 / 西安」（音节歧义切分）。
-- 输入中途的逗号等非字母键：M0 约定为清空 preedit 并转发该键。
-- 切换焦点/输入法时 preedit 被清空（`reset` 覆写）。
+## 薄壳实现要点（防止回归）
+
+- 消费按键必须 `keyEvent.filterAndAccept()`：仅 `filter()` 会让原文
+  回传应用，造成「原文+上屏」双重投递（实测踩过）。
+- 5.1.x API：`reset(entry, InputContextEvent&)`、
+  `create(AddonManager*)`、`FCITX_ADDON_FACTORY(单参)`、
+  `CandidateWord` 抽象类需子类实现 `select`。
+- FFI 返回指针仅在下一 `ior_*` 调用前有效：先拷入 `std::string`
+  再构造 `fcitx::Text` / 候选列表。
+- M0 已知简化：全部输入上下文共享一个引擎实例（M1 改 per-IC 状态）。
 
 ## 故障排查
 
-- **加载报 undefined symbol（ior_engine_...）**：`ior.so` 没有链接
-  `libior_engine.a`。确认 `cargo build -p fcitx5-ior --release` 已在
-  workspace 根生成 `target/release/libior_engine.a`，且
-  `-DIOR_WORKSPACE_DIR` 指向该 workspace 根；必要时
-  `nm -D --defined-only <ior.so> | grep ior_engine_` 应能看到符号。
-- **配置工具里没有 ior**：`inputmethod/ior.conf` 没装到
-  `FCITX_INSTALL_INPUTMETHODDIR`；检查 `cmake --install` 输出路径，
-  以及用户级目录 `~/.local/share/fcitx5/inputmethod/`。
-- **切换到 ior 后无反应**：`FCITX_DEBUG=1 fcitx5 -r --replace` 看日志；
-  确认 `ior.conf` 中 `Library=ior` 与实际 `ior.so` 文件名一致。
-- **候选/上屏乱码**：确认终端/应用按 UTF-8 处理；FFI 返回的都是
-  NUL 结尾的 UTF-8 字符串。
-- **并发**：Rust 引擎按 fcitx5 单线程主循环假设编写，M0 全部输入
-  上下文共享一个引擎实例（M1 改为每上下文一份状态）。
-
-## 状态
-
-- 目标平台：fcitx5 5.1.x。
-- 本机未编译（无 fcitx5 开发头文件 / cmake）；Rust 侧
-  `cargo test -p fcitx5-ior` 与 `cargo run -p fcitx5-ior --example
-  m0_demo` 在本机通过。
+- **`Group Item ior ... is not valid. Removed`**：`inputmethod/ior.conf`
+  未装到位，或 addon 元数据（`/usr/share/fcitx5/addon/ior.conf`）缺失，
+  或 `Library=` 与 .so 文名不符（应为 `libior` / `libior.so`）。
+- **`Could not locate library libior.so`**：模块未装入 fcitx5 扫描的
+  lib 目录（Debian 系为 `/usr/lib/<arch>/fcitx5`）。
+- **`FCITX_ADDON_DIRS` 陷阱**：它是覆盖而非追加系统扫描路径，
+  指向单目录会导致系统 addon 全部失载，排查时慎用。
+- **切换到 ior 无反应**：`fcitx5-remote -n` 确认当前 IM；日志
+  `fcitx5 --replace` 前台跑看 stderr。
+- **符号缺失**：`nm -D /usr/lib/<arch>/fcitx5/libior.so | grep ior_engine_`；
+  引擎静态链入，正常应只有 `fcitx_addon_factory_instance` 等导出。
