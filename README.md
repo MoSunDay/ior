@@ -55,18 +55,27 @@ scripts/download_models.sh
 
 ## fcitx5 addon 构建说明
 
-- 系统依赖：`libfcitx5-core-dev`、`cmake`、`ninja`
-  （**本机当前未安装 dev 包**，故 C++ 侧暂不在 CI/默认构建路径中）。
-- Rust 侧：`cargo build -p fcitx5-ior --release` 产出
-  `target/release/libior_engine.a`（staticlib）与
-  `target/release/libior_engine.so`（cdylib），C++ 薄壳通过 C ABI 调用。
-- CMake 构建指引见 `crates/fcitx5-addon/cpp/README.md`。
+- 系统依赖（Ubuntu noble 实测）：`libfcitx5core-dev libfcitx5utils-dev
+  libfcitx5config-dev cmake ninja-build pkg-config`。
+- Rust 侧由 CMake 自动驱动（`cargo build --release -p fcitx5-ior`），产出
+  `target/release/libior_engine.a`（staticlib，链入薄壳）与
+  `libior_engine.so`（cdylib，供独立宿主复用）。
+- 构建 + 系统安装（fcitx5 5.1.7 实测通过，详见
+  `crates/fcitx5-addon/cpp/README.md` 与 `docs/M0-FRONTEND-TEST.md`）：
+
+  ```sh
+  cd crates/fcitx5-addon/cpp
+  cmake -S . -B build -G Ninja -DCMAKE_INSTALL_PREFIX=/usr
+  cmake --build build
+  sudo cmake --install build        # libior.so → /usr/lib/…/fcitx5, ior.conf → /usr/share/fcitx5/addon
+  fcitx5 --replace &                # 或注销重登；然后 fcitx5-remote -s ior 切换
+  ```
 
 ## 里程碑
 
 | 阶段 | 内容 |
 |------|------|
-| **M0（当前）** | 骨架 + 薄壳 + 词级转换打通；dict-tools/voice/llm 规划面 |
+| **M0 ✅ 完成** | 骨架 + 薄壳 + 词级转换打通，GTK/Qt/XIM 三前端实测通过（2026-10-31，见 `docs/M0-FRONTEND-TEST.md`） |
 | M1 | 核心词库 10 万级（core.tsv → engine-core Dictionary） |
 | M2 | 整句 trigram + beam 解码、双拼、模糊音 |
 | M3 | 用户自学习（词频调序、造词、云备份接口） |
