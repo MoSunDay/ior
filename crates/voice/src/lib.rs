@@ -1,16 +1,26 @@
-//! Voice input planning surface for ior (phase 2 placeholder).
+//! Voice input for ior (phase 2, V1: hotkey + remote Qwen ASR).
 //!
-//! M0 keeps this crate dependency-free: it only names the planned pipeline
-//! stages, the model manifest, and the push-to-talk hotkey so that docs,
-//! scripts, and the addon can refer to stable identifiers. No audio,
-//! ONNX, or ASR code lives here yet.
+//! Still zero third-party dependencies: capture shells out to the
+//! system recorder (pw-record / parec / arecord), HTTP is a hand-rolled
+//! client over `std::net`, and ASR talks to the OpenAI-compatible
+//! `/v1/audio/transcriptions` endpoint deployed on node02 (see
+//! scripts/deploy-asr-node02.sh and docs/NODE02-DEPLOY.md).
 //!
-//! Phase-2 roadmap (V1-V4):
-//! - V1: push-to-talk capture (cpal/PipeWire) gated by silero VAD.
-//! - V2: streaming bilingual ASR (sherpa-onnx zipformer) for live text.
-//! - V3: batch re-decode (whisper-rs) for accuracy after each utterance.
-//! - V4: model download/management (see scripts/download_models.sh) and
-//!   addon wiring plus latency tuning.
+//! - [`hotkey`]: `"ctrl+grave"` to keysym + fcitx5-aligned modifier bits.
+//! - [`capture`]: recorder process, raw-PCM read loop, WAV wrap/unwrap.
+//! - [`http`]: http://-only POST client (multipart and JSON bodies).
+//! - [`json`]: string escape/extract for the optional polish call.
+//! - [`asr`]: transcription request assembly and text-response handling.
+//!
+//! Remaining roadmap (V2-V4): silero VAD gating, streaming bilingual
+//! ASR (sherpa-onnx zipformer), batch re-decode (whisper-rs), and local
+//! model management (see scripts/download_models.sh).
+
+pub mod asr;
+pub mod capture;
+pub mod hotkey;
+pub mod http;
+pub mod json;
 
 /// One downloadable model in the phase-2 voice manifest.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,8 +38,9 @@ pub const STAGES: &[&str] = &[
     "asr-batch(whisper-rs)",
 ];
 
-/// Planned push-to-talk hotkey (configurable in the final addon).
-pub const PUSH_TO_TALK_DEFAULT_KEY: &str = "F4";
+/// Default voice hotkey; configurable via `voice.hotkey` in
+/// `fcitx5/ior/config.toml` (parsed by [`hotkey::parse_hotkey`]).
+pub const PUSH_TO_TALK_DEFAULT_KEY: &str = "ctrl+grave";
 
 /// Stage list joined with " -> " for docs and log lines.
 pub fn pipeline_summary() -> String {
@@ -96,6 +107,7 @@ mod tests {
 
     #[test]
     fn push_to_talk_key_is_documented() {
-        assert_eq!(PUSH_TO_TALK_DEFAULT_KEY, "F4");
+        assert_eq!(PUSH_TO_TALK_DEFAULT_KEY, "ctrl+grave");
+        assert!(hotkey::parse_hotkey(PUSH_TO_TALK_DEFAULT_KEY).is_some());
     }
 }

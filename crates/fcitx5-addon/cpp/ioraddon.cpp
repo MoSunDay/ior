@@ -2,7 +2,9 @@
 // reached through the C ABI declared in ioraddon.h.
 #include "ioraddon.h"
 
+#include <fcitx-utils/event.h>
 #include <fcitx-utils/key.h>
+#include <fcitx/addonmanager.h>
 #include <fcitx/event.h>
 #include <fcitx/inputcontext.h>
 #include <fcitx/inputpanel.h>
@@ -10,6 +12,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <ctime>
 #include <cstdlib>
 #include <filesystem>
 #include <limits>
@@ -81,9 +84,22 @@ std::filesystem::path userdbPath() {
 // Loads the persisted user dictionary (a missing file is a normal cold
 // start) and ages it by the time since it was last written: every 30 days
 // since the last save halves the learned frequencies once.
-IorEngine::IorEngine() : raw_(ior_engine_new()) {
+// Voice poll cadence: 50ms is far below human perception of commit
+// latency while staying negligible on the event loop.
+constexpr uint64_t kVoicePollUsec = 50'000;
+
+IorEngine::IorEngine(fcitx::EventLoop* eventLoop) : raw_(ior_engine_new()) {
     if (raw_ == nullptr) {
         return;
+    }
+    if (eventLoop != nullptr && ior_engine_voice_hotkey_keysym(raw_) != 0) {
+        voicePollEvent_ = eventLoop->addTimeEvent(
+            CLOCK_MONOTONIC, kVoicePollUsec, kVoicePollUsec / 5,
+            [this](fcitx::EventSourceTime* source, uint64_t /*usec*/) {
+                pollVoice();
+                source->setNextInterval(kVoicePollUsec); // periodic
+                return true;
+            });
     }
     const auto path = userdbPath();
     if (path.empty() || ior_engine_userdb_load(raw_, path.c_str()) != 0) {
@@ -128,7 +144,14 @@ void IorEngine::keyEvent(const fcitx::InputMethodEntry& /*entry*/,
     if (ic == nullptr) {
         return;
     }
+    lastIc_ = ic;
     const auto sym = static_cast<uint32_t>(keyEvent.key().sym());
+
+    // ctrl+` (default) drives voice input before anything else, so it
+    // works mid-composition and never leaks the grave key to the app.
+    if (handleVoiceHotkey(ic, keyEvent)) {
+        return;
+    }
 
     // Shift toggles the Chinese/English mode on RELEASE, and only when it
     // was not used as a modifier (no other key pressed while held). Press
@@ -221,15 +244,29 @@ void IorEngine::updateUI(fcitx::InputContext& ic) {
         return;
     }
     auto& panel = ic.inputPanel();
-    const char* preedit = ior_engine_preedit(raw_);
-    if (*preedit == '\0') {
+    const uint32_t voiceState = ior_engine_voice_state(raw_);
+    // Copy the FFI string before other ior_* calls (lifetime rule).
+    const std::string preedit = ior_engine_preedit(raw_);
+    if (preedit.empty() && voiceState == 0) {
         panel.reset();
     } else {
-        // Keep the raw pinyin in the input panel instead of embedding it in
-        // the client's text field; the candidate window still shows the
-        // composition above the candidates.
+        std::string line = preedit;
+        if (voiceState != 0) {
+            // While listening/transcribing the panel shows a status hint
+            // instead of the (empty) composition preedit.
+            const std::string hotkey = ior_engine_voice_hotkey_name(raw_);
+            line = voiceState == 1 ? "[voice] listening... press " + hotkey +
+                                         " again to cancel"
+                                   : "[voice] transcribing...";
+        }
         panel.setPreedit(
-            fcitx::Text(preedit, fcitx::TextFormatFlag::Underline));
+            fcitx::Text(line, fcitx::TextFormatFlag::Underline));
+        if (voiceState != 0) {
+            ic.updateUserInterface(fcitx::UserInterfaceComponent::InputPanel);
+            return; // no candidates while the mic is open
+        }
+        // The panel preedit above keeps the raw pinyin out of the client's
+        // text field; the candidate window still shows the composition.
 
         // FFI strings only live until the next ior_* call, so copy them
         // into std::string first and build the candidate list afterwards.
@@ -265,6 +302,62 @@ void IorEngine::updateUI(fcitx::InputContext& ic) {
     ic.updateUserInterface(fcitx::UserInterfaceComponent::InputPanel);
 }
 
+// True when the key event is the configured voice hotkey (sym + exact
+// modifier bits over Shift/Ctrl/Alt/Super; NumLock etc. are ignored).
+bool IorEngine::handleVoiceHotkey(fcitx::InputContext* ic,
+                                  fcitx::KeyEvent& keyEvent) {
+    const auto sym = static_cast<uint32_t>(keyEvent.key().sym());
+    const uint32_t hotkeySym = ior_engine_voice_hotkey_keysym(raw_);
+    if (hotkeySym == 0 || sym != hotkeySym) {
+        return false;
+    }
+    constexpr uint32_t kModMask = (1u << 0) /*Shift*/ | (1u << 2) /*Ctrl*/ |
+                                  (1u << 3) /*Alt*/ | (1u << 6) /*Super*/;
+    const uint32_t states = keyEvent.key().states().toInteger();
+    if ((states & kModMask) != ior_engine_voice_hotkey_mods(raw_)) {
+        return false; // e.g. plain ` or ctrl+shift+`: not the hotkey
+    }
+    const bool hold = ior_engine_voice_hotkey_mode(raw_) != 0;
+    if (!keyEvent.isRelease()) {
+        // toggle: idle -> record, active -> cancel.
+        // hold: start when idle, otherwise ignore the repeat press.
+        if (!hold || ior_engine_voice_state(raw_) == 0) {
+            ior_engine_voice_toggle(raw_);
+        }
+    } else if (hold && ior_engine_voice_state(raw_) == 1) {
+        ior_engine_voice_stop(raw_); // release stops + transcribes
+    } else {
+        return false; // releases in toggle mode are not ours
+    }
+    keyEvent.filterAndAccept();
+    pollVoice(); // pick up an immediate cancel transition
+    updateUI(*ic);
+    return true;
+}
+
+// Drains the worker: commits a finished transcript to lastIc_ (bypassing
+// the pinyin session — ASR output is final Hanzi) and refreshes the UI.
+void IorEngine::pollVoice() {
+    if (raw_ == nullptr) {
+        return;
+    }
+    if (ior_engine_voice_poll(raw_) != 1) {
+        return;
+    }
+    // Copy before any other ior_* call (FFI lifetime rule).
+    const std::string text = ior_engine_voice_take_text(raw_);
+    if (text.empty()) {
+        return;
+    }
+    if (ior_engine_preedit(raw_)[0] != '\0') {
+        ior_engine_reset(raw_); // drop a stale composition first
+    }
+    if (lastIc_ != nullptr) {
+        lastIc_->commitString(text); // not learned: ASR text is not pinyin
+        updateUI(*lastIc_);
+    }
+}
+
 IorCandidateWord::IorCandidateWord(fcitx::Text text, IorEngineC* engine,
                                    IorEngine* owner, uint32_t index)
     : fcitx::CandidateWord(std::move(text)), engine_(engine), owner_(owner),
@@ -285,8 +378,8 @@ void IorCandidateWord::select(fcitx::InputContext* ic) const {
     owner_->updateUI(*ic);
 }
 
-fcitx::AddonInstance* IorEngineFactory::create(fcitx::AddonManager* /*m*/) {
-    return new IorEngine();
+fcitx::AddonInstance* IorEngineFactory::create(fcitx::AddonManager* m) {
+    return new IorEngine(m != nullptr ? m->eventLoop() : nullptr);
 }
 
 FCITX_ADDON_FACTORY(IorEngineFactory);

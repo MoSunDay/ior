@@ -2,11 +2,65 @@
 
 本项目所有显著变更记录于此。格式参考 Keep a Changelog，版本遵循 SemVer。
 
-## [Unreleased] - Rime 对标第一批（P0–P4 + preset vocabulary + LM）
+## [Unreleased]
+
+### 语音输入 V1：ctrl+` 按键说话 + node02 远端 Qwen ASR（+可选润色）
+
+规划与验证记录见 `docs/NODE02-DEPLOY.md`、`docs/VOICE-VERIFY.md`。
+
+#### 语音输入（voice crate，零第三方依赖）
+- 热键解析：`voice::hotkey` 把 `"ctrl+grave"`（别名 `"ctrl+\`"`）等规格
+  解析为 keysym + 与 fcitx5 `KeyStates::toInteger` 位对齐的修饰键掩码
+  （Shift 1<<0 / Ctrl 1<<2 / Alt 1<<3 / Super 1<<6）。
+- 采集：`capture_command = "auto"` 依次探测 pw-record → parec → arecord，
+  输出 16 kHz s16le mono；亦可为任意 argv（测试用 `cat` 桩）。WAV 头按需
+  写入/嗅探剥离（pw-record 自带头）。
+- 网络：手写 http:// 客户端（分块重组、超时、Bearer 可选）、multipart 拼装、
+  JSON 字符串转义/抽取（含 UTF-16 代理对），全程 `std` only。
+- ASR：OpenAI 兼容 `POST /v1/audio/transcriptions`（`response_format=text`），
+  默认 `http://node02:8000` + `Qwen/Qwen3-ASR-4B`；可选润色走
+  `/v1/chat/completions` 抽 `content` 字段。
+- 密钥只经环境变量（`IOR_ASR_API_KEY` / `IOR_LLM_API_KEY`），配置文件仅存
+  变量名；endpoint 强制 `http://` 前缀（内网明文模型，见安全模型文档）。
+
+#### fcitx5 addon 桥接（FFI v2 增补，18→28 符号，additive-only）
+- 新增 `ior_engine_voice_{hotkey_keysym,hotkey_mods,hotkey_mode,hotkey_name,
+  state,toggle,stop,cancel,poll,take_text}`（`ffi_voice.rs`，null-safe）。
+- `voice_state.rs`（325 行）状态机 idle/1=recording/2=transcribing；
+  `voice_settings.rs`（115 行，自 voice_state 拆出以满足新文件 ≤400 行）
+  承载 `[voice]`/`[llm.asr]`/`[llm]` 快照；`voice_worker.rs` 后台线程
+  采集→WAV→ASR→润色，经 channel 汇报，主线程 `poll` 排水。
+- 双信号设计：`stop`（停录仍转写，hold 松手用）≠ `cancelled`（丢弃，
+  toggle 二按用），修复了单标志版"松手即丢稿"的缺陷。
+- C++ 薄壳（`ioraddon.cpp` 385 行）：`handleVoiceHotkey` 掩码比较（忽略
+  NumLock 等无关位）、50 ms `EventLoop::addTimeEvent` 周期轮询
+  （`setNextInterval` 续订）、`pollVoice` 完成文本直接 `commitString`
+  （不经候选、不进用户词典）、录音/转写中面板显示状态提示并隐藏候选。
+
+#### 配置（ior-config）
+- 新 section：`[voice]`（enabled/hotkey/hotkey_mode/capture_command/
+  sample_rate/max_duration_ms）与 `[llm.asr]`/`[llm]`（endpoint/model/
+  api_key_env/language/timeout_ms），schema 全量校验 + 默认值。
+
+#### 部署与文档
+- `scripts/deploy-asr-node02.sh`：ssh 一键部署 vLLM ≥0.11（ModelScope 下载
+  权重）+ systemd `ior-asr.service`（8000）/`ior-llm.service`（8001，
+  `--with-llm`），无任何密钥写入。
+- `docs/NODE02-DEPLOY.md`（端口/hosts/冒烟/安全模型/排障）、
+  `docs/VOICE-VERIFY.md`（headless 记录 + 真机 xdotool 十项清单）、
+  README 架构图/crates 表/配置示例/里程碑同步。
+
+#### 回归
+- `cargo test --workspace` 343/343（ior-config 38+1、voice 27、
+  fcitx5-ior 43 等）；clippy `-D warnings`、fmt、行数门禁全绿；
+  C++ 侧 cmake+ninja 构建通过，`libior.so` 导出 10 个 voice 符号。
+
+
+### 前批：Rime 对标第一批（P0–P4 + preset vocabulary + LM）
 
 规划全貌见 `docs/ROADMAP-RIME-PARITY.md`；本批覆盖 P0 / P5-lite / P3 / P1 / P2 / P4，并补齐 Rime preset vocabulary 的部署语义。
 
-### Enter 上屏原始拼音（2026-11-01）
+#### Enter 上屏原始拼音（2026-11-01）
 - 新默认语义：预编辑激活时 Enter 把已输入的拼音原码原样上屏（含已敲入的
   `'` 分隔符），不进用户词典学习，可在中文模式下直接落拉丁字母；空格仍
   上屏首选汉字；预编辑为空时 Enter 透传给应用（换行不受影响）。
@@ -30,7 +84,7 @@
   必须在目标窗口聚焦注册 IC 之后再切换、并断言 `fcitx5-remote -n`＝`ior`
   （本机新窗口默认 IC 是 rime，其 Enter 同样上屏原码，不断言极易误判）。
 
-### 音节表补全与 houxuanci 回归（2026-11-01）
+#### 音节表补全与 houxuanci 回归（2026-11-01）
 - `engine-core` 的 `SYLLABLES` 由 403 补到 425：依据 bundled luna_pinyin
   增补 22 个读音（`xuan`、`zen`、`kui`、`dei`、`nang`、`eng`、`lve`、`nun`、
   `nia`、`pia`、`zhei`、`sei`、`tei`、`biang`、`cei`、`din`、`fiao`、`fong`、
@@ -48,7 +102,7 @@
   真机复核：全拼 `houxuanci` 候选窗可见 `hou'xuan'ci` 与第 4 条「候选词」，
   `xuanze` + 空格落盘「选择」。
 
-### 候选窗 preedit 不再内联回显（2026-11-01）
+#### 候选窗 preedit 不再内联回显（2026-11-01）
 - addon `updateUI` 由 `panel.setClientPreedit(...)` 改为 `panel.setPreedit(...)`：
   拼音原码只显示在候选窗顶部（候选上方），不再写入客户端文本域；空 preedit
   仍走 `panel.reset()`。
@@ -57,7 +111,7 @@
 - 安装的 `/usr/lib/x86_64-linux-gnu/fcitx5/libior.so`
   md5 `8939ce133b11aae1476348c193444ce9`。
 
-### 默认简体与不完整输入前缀回退（2026-11-01）
+#### 默认简体与不完整输入前缀回退（2026-11-01）
 - `dict-tools compile` 新增 `--simplify`：构建期用 vendored OpenCC ver.1.4.2
   t2s 表（`data/opencc/TSPhrases.txt` 最长短语优先 → `TSCharacters.txt`
   单字回退）转换候选汉字，再按简化后的 `(key, hanzi)` 重新归一化去重。
@@ -76,7 +130,7 @@
   clippy / fmt / 行数门禁全绿；`engine-core/examples/probe` 加入
   `n/ni/nih/niha/nihao` 回归样例。
 
-### 品牌与第二轮复审（2026-11-01）
+#### 品牌与第二轮复审（2026-11-01）
 - 新增自有图标 `assets/ior.svg`（含 48×48 PNG 变体）；`inputmethod/ior.conf` 的占位
   `Icon=fcitx-pinyin` 改为 `Icon=ior`，CMake 安装到
   `share/icons/hicolor/scalable/apps/`（fcitx5 主题图标约定）。
@@ -84,7 +138,7 @@
   下一批优先级（P2 质量收尾 / per-IC 隔离 / 配置闭环）；README 的 crates 表、
   里程碑与配置说明同步。
 
-### LM 接入与全量词库训练（2026-11-01）
+#### LM 接入与全量词库训练（2026-11-01）
 - `Session` 新增 `lm: Option<GramModel>` 与 `set_lm`；`session::candidates` 在装有
   模型时走 `decoder::candidates_with_lm`，无模型保持原三步路径。
 - addon 启动时按 `$XDG_DATA_HOME/fcitx5/ior/core.gram` → `/usr/share/fcitx5/ior/core.gram`
@@ -98,7 +152,7 @@
 - 真机整句：`jintiantianqibucuo␣` → 今天天氣不錯，`woxiangqubeijing␣` →
   我想去北京（`docs/M2-VERIFY.md`）。
 
-### P0 = M1：词库二进制与加载
+#### P0 = M1：词库二进制与加载
 - `.ior` 格式升级 **v2**：13 字节头 + key 索引区（varint 长度前缀、key 升序去重）+ 值区
   （freq 降序），freq 采用 LEB128 varint；读取端 v1/v2 双兼容，损坏输入报偏移与条目上下文。
 - `engine-core`：`Dictionary::from_ior_bytes` / `from_ior_layers`（base→领域→用户多词典叠加，
@@ -109,7 +163,7 @@
   （目标 <1s）、加载中位 26.7 ms、lookup **P99 0.39 µs**（目标 <10 µs）。
 - `data/README.md`：v2 字节布局规范与 rime 词库导入示例。
 
-### P5-lite = M4 先行项：分页 / Shift 中英 / 中文标点
+#### P5-lite = M4 先行项：分页 / Shift 中英 / 中文标点
 - `engine-core`：`Session` 增加分页状态（`page_count/current_page/next_page/prev_page/
   select_flat`，`page_size` 真正生效，数字键按当前页偏移选词，改码页归零）；
   `process_shift` 中英切换（`ShiftAction::{CommitRaw,CommitBest,Clear}` 三态可配）；
@@ -120,7 +174,7 @@
 - C++ 薄壳：候选点击不再合成数字键；Page_Up/Down 翻页；Shift 释放且未作修饰时切换中英；
   候选列表页大小统一为引擎当前页（消除 5 vs 10 不一致）。
 
-### P3 = M3：用户词典持久化
+#### P3 = M3：用户词典持久化
 - `engine-core`（无 I/O，只收/回 bytes）：`user_dict_store.rs` —— 快照
   `to_snapshot/from_snapshot`（`# ior userdb v1` TSV）、append-only 日志
   `log_line/replay`、压实 `compact`（幂等）、时间衰减 `decay`（整数次减半、零频清除）、
@@ -130,7 +184,7 @@
   全部四条学习路径（键盘提交/候选点选/Shift 切换附带提交/析构兜底）均落盘快照
   （快照即压实，失败静默不阻断输入）。
 
-### P1 = M2a：拼式管线数据化（模糊音查询化 + 简拼 + 双拼框架）
+#### P1 = M2a：拼式管线数据化（模糊音查询化 + 简拼 + 双拼框架）
 - 模糊音从「构建期烘焙进词典 key」改为**查询侧等价类展开**（`spelling.rs`：
   `syllable_variants`/`key_variants`，声母×韵母独立组合、跨变体取最高频不叠加）；
   词典 key 保持全拼规范形，`from_tsv`/`from_ior_bytes` 系列去模糊参数。
@@ -142,7 +196,7 @@
 - 配置：`ior-config` 同步五值枚举并接受 rime 别名 `flypy`（= 小鹤）。
 - addon `candidates` 薄封装保持原签名，宿主零改动。
 
-### 数据导入（P0 收尾，网络恢复后落地）
+#### 数据导入（P0 收尾，网络恢复后落地）
 - 词库：导入 rime **luna_pinyin**（LGPL-3.0，出处与许可保留在文件头），
   `compile` 产出 **70,055 词条 / 19,920 键**，`data/dicts/core.ior`（P0 时约 730 KB，
   接入 essay 后约 9.4 MB；按仓库策略不入库，`scripts/install-core-dict.sh` 一键编译安装）。
@@ -156,7 +210,7 @@
   （微軟 `ing=;`）；三张真实表对 404 音节逐码回环单测（仅 `lo`/`luo`
   方案固有碰撞，显式登记）。
 
-### P0 数据完整性：preset vocabulary（essay）部署语义
+#### P0 数据完整性：preset vocabulary（essay）部署语义
 - 背景：`luna_pinyin.dict.yaml` 只提供字词与生僻词，常用短语（天氣/今天/你好/中國）
   在 Rime 部署期由 `essay.txt`（preset vocabulary）按字音编码，不写入 dict.yaml。
   旧 `tianqi→蚕戚` 并非 `.ior` 读取 bug：`parse_ior`/`dump_ior` 与 dict-tools
@@ -174,7 +228,7 @@
   `core.ior` 为 293,168 keys / 429,870 词条 / 9,444,158 字节，compile 约 3.5 s；
   引擎确认 `tian'qi`→天氣、`jin'tian`→今天、`ni'hao`→你好、`zhong'guo`→中國。
 
-### P2 = M2b：整句解码（`.gram` n-gram 语言模型 + beam search）
+#### P2 = M2b：整句解码（`.gram` n-gram 语言模型 + beam search）
 - `.gram` v1 二进制语言模型格式（规范以 `engine-core/src/lm.rs` 模块文档为权威）：
   24 字节头（magic `IOGRAM` + version + order + 4×u32 LE 计数）+ unigram/bigram/trigram
   三段（索引区 `varint(len)+utf8 key` 严格升序、值区 varint 计数，varint 与 `.ior` v2
@@ -201,11 +255,11 @@
   （LM 链式打分胜过 金田…）。`crates/bench/tests/gram_interlock.rs`：常量对齐、
   字节互认、整句端到端、坏模型拒收。
 
-### CI 与工程
+#### CI 与工程
 - `.github/workflows/ci.yml`：fmt/clippy/test + 行数红线（400/800 规范脚本
   `scripts/check_line_limits.sh`）+ bench 参考性回归（P0 基线门禁不阻断）。
 
-### P4 = M3.5：配置体系第一步（新 crate `ior-config`）
+#### P4 = M3.5：配置体系第一步（新 crate `ior-config`）
 - **TOML 子集解析器**（零第三方依赖、无 unsafe、纯函数）：`[section]`/`[a.b]`
   表头、`key = value`（含点分键）、基本字符串（`\" \\ \n \t \u{XXXX}`）、
   十进制整数、布尔、单行数组（嵌套一层）、`#` 注释；解析失败一律返回带
@@ -227,7 +281,7 @@
   （缺失/无效回落默认），并按用户数据目录 → 系统目录 → builtin 顺序加载
   `core.ior`；`new_engine_with` 保留测试注入 Config+Dictionary。
 
-### 验证
+#### 验证
 - `cargo test --workspace`：**292/292** 通过；`clippy -D warnings`、
   `cargo fmt --check`、行数门禁全绿；fcitx5 C++ cmake 构建通过，`nm -D` 18 符号。
 - **真机回归**（Ubuntu noble/X11/fcitx5 5.1.7/GTK，xdotool 合成键序）：

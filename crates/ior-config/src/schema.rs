@@ -4,7 +4,8 @@
 //! collected as warnings instead of failing the load.
 
 use crate::model::{
-    default_switches, Config, DoublePinyin, Engine, EnterAction, Fuzzy, PunctValue, ShiftAction,
+    default_switches, Config, DoublePinyin, Engine, EnterAction, Fuzzy, HotkeyMode, Llm, LlmAsr,
+    PunctValue, ShiftAction, Voice,
 };
 use crate::value::{kind, Table, Value};
 
@@ -25,13 +26,17 @@ pub fn from_table(table: &Table) -> Result<Loaded, String> {
     let mut engine = Engine::default();
     let mut switches = None;
     let mut punct = None;
+    let mut voice = None;
+    let mut llm = None;
     for (key, value) in table.iter() {
         match key {
             "engine" => engine = parse_engine(value, &mut warnings)?,
             "switches" => switches = Some(parse_switches(value)?),
             "punct" => punct = Some(parse_punct(value)?),
+            "voice" => voice = Some(parse_voice(value, &mut warnings)?),
+            "llm" => llm = Some(parse_llm(value, &mut warnings)?),
             other => warnings.push(format!(
-                "unknown key '{other}' (known sections: engine, switches, punct)"
+                "unknown key '{other}' (known sections: engine, switches, punct, voice, llm)"
             )),
         }
     }
@@ -40,6 +45,8 @@ pub fn from_table(table: &Table) -> Result<Loaded, String> {
             engine,
             switches: switches.unwrap_or_else(default_switches),
             punct: punct.unwrap_or_default(),
+            voice: voice.unwrap_or_default(),
+            llm: llm.unwrap_or_default(),
         },
         warnings,
     })
@@ -157,6 +164,90 @@ fn parse_punct(value: &Value) -> Result<Vec<(String, PunctValue)>, String> {
     Ok(out)
 }
 
+/// Parses the `[voice]` section (defaults for missing keys).
+fn parse_voice(value: &Value, warnings: &mut Vec<String>) -> Result<Voice, String> {
+    let table = expect_table(value, "voice")?;
+    let mut voice = Voice::default();
+    for (key, value) in table.iter() {
+        match key {
+            "enabled" => voice.enabled = expect_bool(value, "voice.enabled")?,
+            "hotkey" => voice.hotkey = expect_nonempty_str(value, "voice.hotkey")?.to_string(),
+            "hotkey_mode" => {
+                voice.hotkey_mode = parse_enum(
+                    value,
+                    "voice.hotkey_mode",
+                    &["toggle", "hold"],
+                    HotkeyMode::parse,
+                )?
+            }
+            "capture_command" => {
+                voice.capture_command =
+                    expect_nonempty_str(value, "voice.capture_command")?.to_string()
+            }
+            "sample_rate" => {
+                voice.sample_rate =
+                    u32::try_from(expect_int_in(value, "voice.sample_rate", 8_000, 192_000)?)
+                        .expect("range checked")
+            }
+            "max_duration_ms" => {
+                voice.max_duration_ms = u32::try_from(expect_int_in(
+                    value,
+                    "voice.max_duration_ms",
+                    1_000,
+                    600_000,
+                )?)
+                .expect("range checked")
+            }
+            other => warnings.push(format!("unknown key 'voice.{other}'")),
+        }
+    }
+    Ok(voice)
+}
+
+/// Parses the `[llm]` section with its nested `[llm.asr]`.
+fn parse_llm(value: &Value, warnings: &mut Vec<String>) -> Result<Llm, String> {
+    let table = expect_table(value, "llm")?;
+    let mut llm = Llm::default();
+    for (key, value) in table.iter() {
+        match key {
+            "enabled" => llm.enabled = expect_bool(value, "llm.enabled")?,
+            "endpoint" => llm.endpoint = expect_url(value, "llm.endpoint")?.to_string(),
+            "model" => llm.model = expect_nonempty_str(value, "llm.model")?.to_string(),
+            "api_key_env" => {
+                llm.api_key_env = expect_nonempty_str(value, "llm.api_key_env")?.to_string()
+            }
+            "asr" => llm.asr = parse_llm_asr(value, warnings)?,
+            other => warnings.push(format!("unknown key 'llm.{other}'")),
+        }
+    }
+    Ok(llm)
+}
+
+/// Parses the `[llm.asr]` transcription-service section.
+fn parse_llm_asr(value: &Value, warnings: &mut Vec<String>) -> Result<LlmAsr, String> {
+    let table = expect_table(value, "llm.asr")?;
+    let mut asr = LlmAsr::default();
+    for (key, value) in table.iter() {
+        match key {
+            "endpoint" => asr.endpoint = expect_url(value, "llm.asr.endpoint")?.to_string(),
+            "model" => asr.model = expect_nonempty_str(value, "llm.asr.model")?.to_string(),
+            "api_key_env" => {
+                asr.api_key_env = expect_nonempty_str(value, "llm.asr.api_key_env")?.to_string()
+            }
+            "language" => {
+                asr.language = expect_nonempty_str(value, "llm.asr.language")?.to_string()
+            }
+            "timeout_ms" => {
+                asr.timeout_ms =
+                    u32::try_from(expect_int_in(value, "llm.asr.timeout_ms", 100, 600_000)?)
+                        .expect("range checked")
+            }
+            other => warnings.push(format!("unknown key 'llm.asr.{other}'")),
+        }
+    }
+    Ok(asr)
+}
+
 /// Parses a string enum with a precise "expected one of ..." error.
 fn parse_enum<T>(
     value: &Value,
@@ -203,6 +294,39 @@ fn expect_count(value: &Value, path: &str) -> Result<usize, String> {
             usize::try_from(*n).map_err(|_| format!("{path}: integer {n} is too large"))
         }
         Value::Int(n) => Err(format!("{path}: expected an integer >= 1, got {n}")),
+        other => Err(format!("{path}: expected an integer, got {}", kind(other))),
+    }
+}
+
+/// A string that must be non-empty (hotkeys, commands, model ids).
+fn expect_nonempty_str<'v>(value: &'v Value, path: &str) -> Result<&'v str, String> {
+    let text = expect_str(value, path)?;
+    if text.trim().is_empty() {
+        return Err(format!("{path}: expected a non-empty string"));
+    }
+    Ok(text)
+}
+
+/// An http(s) URL; the voice HTTP client speaks plain `http://` only, so
+/// anything else is a deployment error caught at load time, not at
+/// record time.
+fn expect_url<'v>(value: &'v Value, path: &str) -> Result<&'v str, String> {
+    let text = expect_nonempty_str(value, path)?;
+    if !text.starts_with("http://") && !text.starts_with("https://") {
+        return Err(format!(
+            "{path}: expected an http:// or https:// URL, got \"{text}\""
+        ));
+    }
+    Ok(text)
+}
+
+/// An integer inside `[min, max]` (sample rates, durations, timeouts).
+fn expect_int_in(value: &Value, path: &str, min: i64, max: i64) -> Result<i64, String> {
+    match value {
+        Value::Int(n) if *n >= min && *n <= max => Ok(*n),
+        Value::Int(n) => Err(format!(
+            "{path}: expected an integer in {min}..={max}, got {n}"
+        )),
         other => Err(format!("{path}: expected an integer, got {}", kind(other))),
     }
 }
@@ -329,7 +453,8 @@ mod tests {
             vec![
                 "unknown key 'engine.fuzzy.typo'".to_string(),
                 "unknown key 'engine.whats_this'".to_string(),
-                "unknown key 'mystery' (known sections: engine, switches, punct)".to_string(),
+                "unknown key 'mystery' (known sections: engine, switches, punct, voice, llm)"
+                    .to_string(),
             ]
         );
     }
@@ -391,6 +516,122 @@ mod tests {
         assert_eq!(
             from_table(&t).unwrap_err(),
             "punct.x: expected a string or an array of strings, got integer"
+        );
+    }
+
+    #[test]
+    fn voice_section_overrides_defaults_and_warns_on_unknown_keys() {
+        let mut t = default_table();
+        let voice = t.get_table_mut("voice").unwrap();
+        voice.insert("hotkey".into(), Value::Str("ctrl+`".into()));
+        voice.insert("hotkey_mode".into(), Value::Str("hold".into()));
+        voice.insert("enabled".into(), Value::Bool(false));
+        voice.insert("sample_rate".into(), Value::Int(44_100));
+        voice.insert("mystery".into(), Value::Bool(true));
+        let loaded = from_table(&t).expect("voice section");
+        assert!(!loaded.config.voice.enabled);
+        assert_eq!(loaded.config.voice.hotkey, "ctrl+`");
+        assert_eq!(loaded.config.voice.hotkey_mode, HotkeyMode::Hold);
+        assert_eq!(loaded.config.voice.sample_rate, 44_100);
+        assert_eq!(
+            loaded.config.voice.capture_command, "auto",
+            "untouched keys keep defaults"
+        );
+        assert_eq!(loaded.warnings, vec!["unknown key 'voice.mystery'"]);
+    }
+
+    #[test]
+    fn voice_enum_and_range_errors_carry_paths() {
+        let mut t = default_table();
+        t.get_table_mut("voice")
+            .unwrap()
+            .insert("hotkey_mode".into(), Value::Str("click".into()));
+        assert_eq!(
+            from_table(&t).unwrap_err(),
+            "voice.hotkey_mode: expected one of \"toggle\", \"hold\", got \"click\""
+        );
+
+        let mut t = default_table();
+        t.get_table_mut("voice")
+            .unwrap()
+            .insert("sample_rate".into(), Value::Int(4_000));
+        assert_eq!(
+            from_table(&t).unwrap_err(),
+            "voice.sample_rate: expected an integer in 8000..=192000, got 4000"
+        );
+
+        let mut t = default_table();
+        t.get_table_mut("voice")
+            .unwrap()
+            .insert("max_duration_ms".into(), Value::Str("long".into()));
+        assert_eq!(
+            from_table(&t).unwrap_err(),
+            "voice.max_duration_ms: expected an integer, got string"
+        );
+
+        let mut t = default_table();
+        t.get_table_mut("voice")
+            .unwrap()
+            .insert("hotkey".into(), Value::Str("   ".into()));
+        assert_eq!(
+            from_table(&t).unwrap_err(),
+            "voice.hotkey: expected a non-empty string"
+        );
+    }
+
+    #[test]
+    fn llm_sections_nest_and_validate() {
+        let mut t = default_table();
+        let llm = t.get_table_mut("llm").unwrap();
+        llm.insert("enabled".into(), Value::Bool(true));
+        let asr = llm.get_table_mut("asr").unwrap();
+        asr.insert(
+            "endpoint".into(),
+            Value::Str("http://10.0.0.2:9000/v1/audio/transcriptions".into()),
+        );
+        asr.insert("model".into(), Value::Str("Qwen/Qwen3-ASR-8B".into()));
+        asr.insert("timeout_ms".into(), Value::Int(2_000));
+        let loaded = from_table(&t).expect("llm section");
+        assert!(loaded.config.llm.enabled);
+        assert_eq!(
+            loaded.config.llm.asr.endpoint,
+            "http://10.0.0.2:9000/v1/audio/transcriptions"
+        );
+        assert_eq!(loaded.config.llm.asr.model, "Qwen/Qwen3-ASR-8B");
+        assert_eq!(loaded.config.llm.asr.timeout_ms, 2_000);
+        assert_eq!(loaded.config.llm.asr.language, "zh");
+        assert_eq!(
+            loaded.config.llm.endpoint,
+            "http://node02:8001/v1/chat/completions"
+        );
+
+        // [llm] present without [llm.asr]: nested defaults survive.
+        let mut t = default_table();
+        *t.get_table_mut("llm").unwrap() =
+            Table::from_pairs(vec![("enabled".to_string(), Value::Bool(false))]);
+        let loaded = from_table(&t).expect("llm without asr");
+        assert_eq!(loaded.config.llm.asr, LlmAsr::default());
+
+        let mut t = default_table();
+        t.get_table_mut("llm")
+            .unwrap()
+            .get_table_mut("asr")
+            .unwrap()
+            .insert("endpoint".into(), Value::Str("node02:8000".into()));
+        assert_eq!(
+            from_table(&t).unwrap_err(),
+            "llm.asr.endpoint: expected an http:// or https:// URL, got \"node02:8000\""
+        );
+    }
+
+    #[test]
+    fn unknown_top_level_sections_still_warn() {
+        let mut t = default_table();
+        t.insert("voise".into(), Value::Table(Table::new()));
+        let loaded = from_table(&t).expect("typo is a warning");
+        assert_eq!(
+            loaded.warnings,
+            vec!["unknown key 'voise' (known sections: engine, switches, punct, voice, llm)"]
         );
     }
 }

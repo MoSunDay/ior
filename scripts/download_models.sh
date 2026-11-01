@@ -22,5 +22,11 @@ printf '  %-36s %-22s %8s\n' "qwen2.5-3b-instruct-q4" "balanced polish" "~2 GB"
 printf '  %-36s %-22s %8s\n' "qwen2.5-7b-instruct-q4" "async re-check" "~4.5 GB"
 echo
 echo "Models will be stored under data/models/ (git-ignored)."
-echo "TODO: implement downloads in V4"
+echo
+echo "V1 note (2026-11-01): voice input shipped REMOTE-FIRST. ASR runs as"
+echo "  an OpenAI-compatible service on node02; deploy with:"
+echo "      scripts/deploy-asr-node02.sh <user@node02> --with-llm"
+echo "  (docs/NODE02-DEPLOY.md). The local-model list above stays the plan"
+echo "  for V2+ (VAD / streaming / batch re-decode) offline fallback."
+echo "TODO: implement local downloads in V2+"
 exit 0

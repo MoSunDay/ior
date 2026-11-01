@@ -24,6 +24,9 @@ use engine_core::session::{self, ProcessResult, Session};
 use engine_core::user_dict::{self, UserDict};
 use ior_config as user_config;
 
+use crate::voice_settings;
+use crate::voice_state;
+
 /// Opaque engine handed to C. Boxed by [`crate::ffi::ior_engine_new`] and
 /// freed by [`crate::ffi::ior_engine_free`]; C never touches its layout.
 pub struct IorEngine {
@@ -38,6 +41,8 @@ pub struct IorEngine {
     pub commit_taken: bool,
     /// Candidate texts of the **current page**, in display order.
     pub candidates_buf: Vec<CString>,
+    /// Voice-input runtime (hotkey state machine + worker handle).
+    pub voice: voice_state::VoiceRuntime,
 }
 
 /// Builds an engine at client start: user config (`$XDG_CONFIG_HOME/
@@ -46,7 +51,26 @@ pub struct IorEngine {
 /// system share dir), an optional `core.gram` language model from those
 /// same data dirs, and freshly computed display buffers.
 pub fn new_engine() -> IorEngine {
-    new_engine_with_lm(startup_config(), startup_dictionary(), startup_lm())
+    // One config read feeds both the engine and the voice settings.
+    let user = startup_user_config();
+    new_engine_with_voice(
+        to_engine_config(&user),
+        startup_dictionary(),
+        startup_lm(),
+        voice_settings::settings_from_config(&user),
+    )
+}
+
+/// The full user config (engine + voice/llm sections), defaults on any
+/// miss; shared by `new_engine` and the voice runtime.
+pub fn startup_user_config() -> user_config::Config {
+    let Some(path) = config_path(
+        std::env::var("XDG_CONFIG_HOME").ok().as_deref(),
+        std::env::var("HOME").ok().as_deref(),
+    ) else {
+        return user_config::Config::default();
+    };
+    read_user_config(&path).unwrap_or_default()
 }
 
 /// Builds an engine over caller-supplied config + dictionary without a
@@ -62,6 +86,23 @@ pub fn new_engine_with_lm(
     dict: Dictionary,
     lm_model: Option<GramModel>,
 ) -> IorEngine {
+    // Voice defaults (tests never toggle it); the addon entry point
+    // passes the user's voice settings explicitly.
+    new_engine_with_voice(
+        engine_config,
+        dict,
+        lm_model,
+        voice_settings::settings_from_config(&user_config::Config::default()),
+    )
+}
+
+/// [`new_engine_with_lm`] plus explicit voice settings (the addon path).
+pub fn new_engine_with_voice(
+    engine_config: EngineConfig,
+    dict: Dictionary,
+    lm_model: Option<GramModel>,
+    voice_settings: voice_settings::VoiceSettings,
+) -> IorEngine {
     let mut session = session::new_session_with(engine_config, dict);
     session::set_lm(&mut session, lm_model);
     let mut engine = IorEngine {
@@ -70,6 +111,7 @@ pub fn new_engine_with_lm(
         commit_buf: CString::new("").expect("empty CString"),
         commit_taken: false,
         candidates_buf: Vec::new(),
+        voice: voice_state::new_runtime(voice_settings),
     };
     refresh(&mut engine);
     engine
@@ -455,6 +497,9 @@ mod tests {
             commit_buf: to_cstring(""),
             commit_taken: false,
             candidates_buf: Vec::new(),
+            voice: voice_state::new_runtime(voice_settings::settings_from_config(
+                &user_config::Config::default(),
+            )),
         };
         engine.session.raw = raw.to_string();
         refresh(&mut engine);

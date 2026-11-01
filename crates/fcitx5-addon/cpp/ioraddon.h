@@ -64,6 +64,22 @@ int32_t ior_engine_userdb_save(IorEngineC* engine, const char* path);
 int32_t ior_engine_userdb_load(IorEngineC* engine, const char* path);
 int32_t ior_engine_userdb_decay(IorEngineC* engine, uint32_t elapsed_secs,
                                 uint32_t half_life_secs);
+// Voice input (additive, still ABI v2). State codes: 0 idle, 1
+// recording, 2 transcribing. hotkey_keysym returns 0 while voice input
+// is disabled (a keysym of 0 never matches a real key). mods uses the
+// fcitx KeyState bits (Ctrl = 1<<2); mode: 0 toggle, 1 hold. poll
+// returns 1 exactly once per finished transcript -> take_text. Strings
+// follow the shared lifetime rule (until the next ior_* call).
+uint32_t ior_engine_voice_hotkey_keysym(const IorEngineC* engine);
+uint32_t ior_engine_voice_hotkey_mods(const IorEngineC* engine);
+uint32_t ior_engine_voice_hotkey_mode(const IorEngineC* engine);
+const char* ior_engine_voice_hotkey_name(const IorEngineC* engine);
+uint32_t ior_engine_voice_state(const IorEngineC* engine);
+uint32_t ior_engine_voice_toggle(IorEngineC* engine);
+uint32_t ior_engine_voice_stop(IorEngineC* engine);
+uint32_t ior_engine_voice_cancel(IorEngineC* engine);
+uint32_t ior_engine_voice_poll(IorEngineC* engine);
+const char* ior_engine_voice_take_text(IorEngineC* engine);
 uint32_t ior_engine_abi_version(void);
 } // extern "C"
 
@@ -72,16 +88,22 @@ uint32_t ior_engine_abi_version(void);
 #include <fcitx/inputmethodengine.h>
 #include <fcitx/text.h>
 
+#include <memory>
+
 namespace fcitx {
 class InputContext;
 class KeyEvent;
+class EventLoop;
+class EventSourceTime;
 } // namespace fcitx
 
 // One shared engine instance across all input contexts is an accepted M0
 // simplification; per-IC state lands in M1 (see docs/M0-FRONTEND-TEST.md).
 class IorEngine final : public fcitx::InputMethodEngine {
 public:
-    IorEngine();
+    // eventLoop drives the 50ms voice-poll timer (may be null in tests:
+    // voice results then arrive only on the next key event).
+    explicit IorEngine(fcitx::EventLoop* eventLoop = nullptr);
     ~IorEngine() override;
 
     void keyEvent(const fcitx::InputMethodEntry& entry,
@@ -98,8 +120,22 @@ public:
     // the keyboard commit paths. Failures are silent.
     void saveUserdb();
 
+    // Drains the voice worker and commits a finished transcript to the
+    // last input context (called by the poll timer and after hotkeys).
+    void pollVoice();
+
 private:
     IorEngineC* raw_;
+    // Voice hotkey handling: compare key sym + modifier bits against the
+    // configured [voice] hotkey (default ctrl+grave). Returns true when
+    // the event was consumed.
+    bool handleVoiceHotkey(fcitx::InputContext* ic, fcitx::KeyEvent& keyEvent);
+    // Where a finished voice transcript is committed. Like the shared
+    // engine itself, one IC is an accepted simplification (M0).
+    fcitx::InputContext* lastIc_ = nullptr;
+    // 50ms timer polling ior_engine_voice_poll so transcripts land even
+    // without further key events.
+    std::unique_ptr<fcitx::EventSourceTime> voicePollEvent_;
     // Shift-as-toggle tracking: a Shift press only flips the mode if no
     // other key was pressed while it was held (i.e. it was not used as a
     // modifier). The toggle itself runs on Shift RELEASE through

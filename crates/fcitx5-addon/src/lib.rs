@@ -33,9 +33,22 @@
 //!   not an error). File I/O lives in [`engine_state`] only — engine-core
 //!   just produces and consumes bytes.
 //!
+//! - The `voice_*` family (see [`ffi_voice`], additive ABI v2) drives
+//!   speech input: a configurable hotkey (`ctrl+\`` by default, from
+//!   `[voice]` in the user config), capture on a worker thread
+//!   ([`voice_worker`]), transcription through the remote Qwen ASR
+//!   service on node02, and commit of the finished transcript via the
+//!   shell's `poll`/`take_text`. The engine stays single-threaded; only
+//!   the worker thread touches capture/HTTP and it reports back through
+//!   a channel drained by `ior_engine_voice_poll`.
+//!
 //! Stability rules: the `ior_*` C ABI is versioned with the addon version;
 //! additive changes only. Anything not `#[no_mangle] extern "C"` here is
 //! internal and may change between releases.
 
 pub mod engine_state;
 pub mod ffi;
+pub mod ffi_voice;
+pub mod voice_settings;
+mod voice_state;
+pub mod voice_worker;

@@ -118,6 +118,36 @@ impl DoublePinyin {
     }
 }
 
+/// `voice.hotkey_mode`: how the voice hotkey interacts with recording.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HotkeyMode {
+    /// `"toggle"`: press starts recording, the next press cancels it.
+    #[default]
+    Toggle,
+    /// `"hold"`: press starts, release stops and transcribes
+    /// (push-to-talk).
+    Hold,
+}
+
+impl HotkeyMode {
+    /// Canonical TOML string.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            HotkeyMode::Toggle => "toggle",
+            HotkeyMode::Hold => "hold",
+        }
+    }
+
+    /// Parses one of `"toggle"` | `"hold"` (push-to-talk alias included).
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "toggle" => Some(HotkeyMode::Toggle),
+            "hold" | "push_to_talk" | "push-to-talk" => Some(HotkeyMode::Hold),
+            _ => None,
+        }
+    }
+}
+
 /// `engine.fuzzy.*`: query-side fuzzy-pinyin toggles, same field names as
 /// engine-core `FuzzyConfig` (all off by default).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -177,6 +207,96 @@ impl Default for Engine {
     }
 }
 
+/// The `[voice]` section: voice-input capture controls. Recording and
+/// ASR live in the `voice` crate; this only carries user settings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Voice {
+    /// Voice input on/off (the hotkey is dead while false).
+    pub enabled: bool,
+    /// Hotkey spec, e.g. `"ctrl+grave"` (alias `"ctrl+\`"`); parsed by
+    /// `voice::hotkey::parse_hotkey` in the addon.
+    pub hotkey: String,
+    /// Hotkey semantics (`toggle` | `hold`).
+    pub hotkey_mode: HotkeyMode,
+    /// Capture command: `"auto"` probes pw-record / parec / arecord, any
+    /// other value is an argv split on spaces (test stubs use `cat`).
+    pub capture_command: String,
+    /// Capture sample rate in Hz (s16le mono).
+    pub sample_rate: u32,
+    /// Hard cap on one utterance; auto-stop transcribes afterwards.
+    pub max_duration_ms: u32,
+}
+
+impl Default for Voice {
+    fn default() -> Self {
+        Voice {
+            enabled: true,
+            hotkey: "ctrl+grave".to_string(),
+            hotkey_mode: HotkeyMode::default(),
+            capture_command: "auto".to_string(),
+            sample_rate: 16_000,
+            max_duration_ms: 60_000,
+        }
+    }
+}
+
+/// The `[llm.asr]` section: the remote transcription service (node02,
+/// Qwen-first, OpenAI-compatible `/v1/audio/transcriptions`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LlmAsr {
+    /// Service URL, `http://` only (see docs/NODE02-DEPLOY.md).
+    pub endpoint: String,
+    /// Model id, Qwen family preferred (default `Qwen/Qwen3-ASR-4B`).
+    pub model: String,
+    /// Environment variable holding the API key; the key itself never
+    /// enters the config file (unset = no Authorization header).
+    pub api_key_env: String,
+    /// ISO language hint passed to the service (`"zh"`).
+    pub language: String,
+    /// Per-request network timeout.
+    pub timeout_ms: u32,
+}
+
+impl Default for LlmAsr {
+    fn default() -> Self {
+        LlmAsr {
+            endpoint: "http://node02:8000/v1/audio/transcriptions".to_string(),
+            model: "Qwen/Qwen3-ASR-4B".to_string(),
+            api_key_env: "IOR_ASR_API_KEY".to_string(),
+            language: "zh".to_string(),
+            timeout_ms: 5_000,
+        }
+    }
+}
+
+/// The `[llm]` section: optional transcript polish plus the nested
+/// `[llm.asr]` transcription settings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Llm {
+    /// Run the transcript through the polish endpoint before commit.
+    pub enabled: bool,
+    /// OpenAI-compatible chat completions URL on node02.
+    pub endpoint: String,
+    /// Polish model id.
+    pub model: String,
+    /// Environment variable holding the API key (see `LlmAsr::api_key_env`).
+    pub api_key_env: String,
+    /// `[llm.asr]`: the transcription service itself.
+    pub asr: LlmAsr,
+}
+
+impl Default for Llm {
+    fn default() -> Self {
+        Llm {
+            enabled: false,
+            endpoint: "http://node02:8001/v1/chat/completions".to_string(),
+            model: "Qwen/Qwen2.5-7B-Instruct".to_string(),
+            api_key_env: "IOR_LLM_API_KEY".to_string(),
+            asr: LlmAsr::default(),
+        }
+    }
+}
+
 /// One `punct.<name>` entry: a single character, or an ordered list of
 /// alternatives (placeholder until the P5 punct system reads it).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -197,6 +317,10 @@ pub struct Config {
     pub switches: Vec<(String, bool)>,
     /// `[punct]`: character mapping placeholder (any name accepted).
     pub punct: Vec<(String, PunctValue)>,
+    /// `[voice]`: voice-input controls.
+    pub voice: Voice,
+    /// `[llm]` + `[llm.asr]`: remote ASR and optional polish.
+    pub llm: Llm,
 }
 
 impl Default for Config {
@@ -207,6 +331,8 @@ impl Default for Config {
             engine: Engine::default(),
             switches: default_switches(),
             punct: Vec::new(),
+            voice: Voice::default(),
+            llm: Llm::default(),
         }
     }
 }
@@ -284,10 +410,61 @@ pub fn to_table(config: &Config) -> Table {
         punct.insert(name.clone(), rendered);
     }
 
+    let mut voice = Table::new();
+    voice.insert("enabled".into(), Value::Bool(config.voice.enabled));
+    voice.insert("hotkey".into(), Value::Str(config.voice.hotkey.clone()));
+    voice.insert(
+        "hotkey_mode".into(),
+        Value::Str(config.voice.hotkey_mode.as_str().to_string()),
+    );
+    voice.insert(
+        "capture_command".into(),
+        Value::Str(config.voice.capture_command.clone()),
+    );
+    voice.insert(
+        "sample_rate".into(),
+        Value::Int(i64::from(config.voice.sample_rate)),
+    );
+    voice.insert(
+        "max_duration_ms".into(),
+        Value::Int(i64::from(config.voice.max_duration_ms)),
+    );
+
+    let mut asr = Table::new();
+    asr.insert(
+        "endpoint".into(),
+        Value::Str(config.llm.asr.endpoint.clone()),
+    );
+    asr.insert("model".into(), Value::Str(config.llm.asr.model.clone()));
+    asr.insert(
+        "api_key_env".into(),
+        Value::Str(config.llm.asr.api_key_env.clone()),
+    );
+    asr.insert(
+        "language".into(),
+        Value::Str(config.llm.asr.language.clone()),
+    );
+    asr.insert(
+        "timeout_ms".into(),
+        Value::Int(i64::from(config.llm.asr.timeout_ms)),
+    );
+
+    let mut llm = Table::new();
+    llm.insert("enabled".into(), Value::Bool(config.llm.enabled));
+    llm.insert("endpoint".into(), Value::Str(config.llm.endpoint.clone()));
+    llm.insert("model".into(), Value::Str(config.llm.model.clone()));
+    llm.insert(
+        "api_key_env".into(),
+        Value::Str(config.llm.api_key_env.clone()),
+    );
+    llm.insert("asr".into(), Value::Table(asr));
+
     let mut root = Table::new();
     root.insert("engine".into(), Value::Table(engine));
     root.insert("switches".into(), Value::Table(switches));
     root.insert("punct".into(), Value::Table(punct));
+    root.insert("voice".into(), Value::Table(voice));
+    root.insert("llm".into(), Value::Table(llm));
     root
 }
 
@@ -313,6 +490,8 @@ mod tests {
         assert_eq!(c.engine.fuzzy, Fuzzy::default());
         assert_eq!(c.switches, default_switches());
         assert!(c.punct.is_empty());
+        assert_eq!(c.voice, Voice::default());
+        assert_eq!(c.llm, Llm::default());
     }
 
     #[test]
@@ -360,5 +539,56 @@ mod tests {
         assert_eq!(engine.get_table("fuzzy").map(Table::len), Some(8));
         assert_eq!(table.get_table("switches").map(Table::len), Some(4));
         assert_eq!(table.get_table("punct").map(Table::len), Some(0));
+    }
+
+    #[test]
+    fn to_table_covers_voice_and_llm() {
+        let table = to_table(&Config::default());
+        let voice = table.get_table("voice").expect("voice");
+        assert_eq!(voice.len(), 6);
+        assert_eq!(str_of(voice.get("hotkey")), Some("ctrl+grave"));
+        assert_eq!(str_of(voice.get("hotkey_mode")), Some("toggle"));
+        assert_eq!(int_of(voice.get("sample_rate")), Some(16_000));
+        let llm = table.get_table("llm").expect("llm");
+        assert_eq!(llm.len(), 5);
+        assert_eq!(bool_of(llm.get("enabled")), Some(false));
+        let asr = llm.get_table("asr").expect("llm.asr");
+        assert_eq!(asr.len(), 5);
+        assert_eq!(str_of(asr.get("model")), Some("Qwen/Qwen3-ASR-4B"));
+        assert_eq!(
+            str_of(asr.get("endpoint")),
+            Some("http://node02:8000/v1/audio/transcriptions")
+        );
+    }
+
+    #[test]
+    fn hotkey_mode_strings_roundtrip() {
+        assert_eq!(HotkeyMode::default(), HotkeyMode::Toggle);
+        assert_eq!(HotkeyMode::parse("toggle"), Some(HotkeyMode::Toggle));
+        assert_eq!(HotkeyMode::parse("hold"), Some(HotkeyMode::Hold));
+        assert_eq!(HotkeyMode::parse("push-to-talk"), Some(HotkeyMode::Hold));
+        assert_eq!(HotkeyMode::parse("click"), None);
+        assert_eq!(HotkeyMode::Hold.as_str(), "hold");
+    }
+
+    fn str_of(value: Option<&Value>) -> Option<&str> {
+        match value {
+            Some(Value::Str(s)) => Some(s),
+            _ => None,
+        }
+    }
+
+    fn int_of(value: Option<&Value>) -> Option<i64> {
+        match value {
+            Some(Value::Int(n)) => Some(*n),
+            _ => None,
+        }
+    }
+
+    fn bool_of(value: Option<&Value>) -> Option<bool> {
+        match value {
+            Some(Value::Bool(b)) => Some(*b),
+            _ => None,
+        }
     }
 }

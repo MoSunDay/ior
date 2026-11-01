@@ -47,6 +47,14 @@
 //!   booleans, same names as engine-core `FuzzyConfig`
 //! - `switches.<name>` — dynamic boolean switch table (any name)
 //! - `punct.<name>` — string or array-of-strings mapping placeholder
+//! - `voice.{enabled,hotkey,hotkey_mode,capture_command,sample_rate,
+//!   max_duration_ms}` — voice-input controls (`hotkey_mode` is
+//!   `"toggle"` | `"hold"`; rates/durations are range-checked)
+//! - `llm.{enabled,endpoint,model,api_key_env}` and
+//!   `llm.asr.{endpoint,model,api_key_env,language,timeout_ms}` —
+//!   remote Qwen ASR (node02) plus optional transcript polish; API keys
+//!   live in environment variables named by `api_key_env`, never in the
+//!   config file
 //!
 //! ```
 //! use ior_config::{apply, default_table, parse};
@@ -68,7 +76,7 @@ mod lex;
 pub use error::ParseError;
 pub use model::{
     default_switches, default_table, to_table, Config, DoublePinyin, Engine, EnterAction, Fuzzy,
-    PunctValue, ShiftAction,
+    HotkeyMode, Llm, LlmAsr, PunctValue, ShiftAction, Voice,
 };
 pub use parser::{is_bare_key, parse};
 pub use patch::{apply, apply_with_warnings, merge_tables, serialize_config, serialize_table};

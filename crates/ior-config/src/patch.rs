@@ -208,7 +208,8 @@ mod tests {
             loaded.warnings,
             vec![
                 "unknown key 'engine.typo'".to_string(),
-                "unknown key 'mystery' (known sections: engine, switches, punct)".to_string(),
+                "unknown key 'mystery' (known sections: engine, switches, punct, voice, llm)"
+                    .to_string(),
             ]
         );
     }

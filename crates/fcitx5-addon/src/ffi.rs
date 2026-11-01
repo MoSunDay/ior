@@ -28,7 +28,9 @@
 //! uint32_t   ior_engine_abi_version(void);
 //! ```
 //!
-//! 18 exported symbols in total.
+//! 18 exported symbols in total, plus the 10 `ior_engine_voice_*`
+//! symbols declared in [`crate::ffi_voice`] (28 overall; ABI stays at
+//! version 2, additive-only).
 //!
 //! # Contract
 //!
