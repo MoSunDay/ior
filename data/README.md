@@ -8,12 +8,36 @@
 ```
 data/
 ├── dicts/
-│   └── sample-extra.tsv   # IT 领域示例词库（20 条，M0 冒烟测试用）
-└── README.md              # 本文件
+│   ├── sample-extra.tsv         # IT 领域示例词库（20 条，M0 冒烟测试用）
+│   └── luna_pinyin.dict.yaml    # rime 明月拼音原词库（P0 数据导入）
+├── double-pinyin/
+│   ├── rime/                    # 上游 schema 原文（含 algebra 键位规则）
+│   │   ├── natural.schema.yaml  # 自然碼
+│   │   ├── flypy.schema.yaml    # 小鶴
+│   │   └── mspy.schema.yaml     # 微軟
+│   ├── natural.tsv              # 转出的 ior 键位表（引擎加载格式）
+│   ├── flypy.tsv
+│   └── mspy.tsv
+└── README.md                    # 本文件
 ```
 
-核心词库 `core.tsv` 位于 `crates/engine-core/assets/core.tsv`（M1 落地，
-目标 10 万词级），不放在本目录。
+`data/dicts/core.ior`（luna 编译产物，约 730 KB）**不入库**，由
+`cargo run -p dict-tools --release -- compile data/dicts/luna_pinyin.dict.yaml data/dicts/core.ior`
+生成；安装用 `scripts/install-core-dict.sh`。内置的
+`crates/engine-core/assets/core.tsv`（~90 条）仅作为测试/无数据时的兜底。
+
+## 双拼键位表（P1 数据导入落地）
+
+三套真实双拼键位表由 `scripts/convert-rime-double-pinyin.py` 从上游
+schema 的 `algebra` 规则**求值**得到，不靠记忆编造：脚本对
+`crates/engine-core/src/syllable.rs` 的 404 音节逐个套用 rime 规则
+（erase/derive/xform/xlit），再反演出 `final<TAB>key`、`zh|ch|sh<TAB>key`
+与 `0syllable<TAB>key` 三种行。转换零冲突；engine-core 的单测再把三张表
+逐音节回环校验（仅 `lo`/`luo` 属方案固有碰撞，显式登记）。
+
+- 上游：<https://github.com/rime/rime-double-pinyin>（GPL-3.0）。
+  键位映射属于功能性事实数据，本仓库保留出处与许可证说明。
+- 重新生成：`python3 scripts/convert-rime-double-pinyin.py`（幂等）。
 
 ## TSV 词库格式
 
@@ -124,7 +148,14 @@ engine-core、不内嵌 403 音节表，需人工比对）。
 ```tsv
 # source: rime-luna-pinyin (https://github.com/rime/rime-luna-pinyin)
 # license: LGPL-3.0 (词库数据部分以各自上游许可为准)
-# imported: cargo run -p dict-tools -- compile luna_pinyin.dict.yaml data/dicts/luna-pinyin.ior
+# imported: cargo run -p dict-tools -- compile luna_pinyin.dict.yaml data/dicts/core.ior
+
+已导入的源文件（原样保留上游头部注释，含出处/许可）：
+
+| 文件 | 上游 | 规模 | 许可证 |
+|------|------|------|--------|
+| `dicts/luna_pinyin.dict.yaml` | rime-luna-pinyin | 70,055 词条（19,920 键） | LGPL-3.0 |
+| `double-pinyin/rime/*.schema.yaml` | rime-double-pinyin | 三套 schema | GPL-3.0 |
 ```
 
 ## 二期模型清单

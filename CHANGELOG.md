@@ -49,9 +49,70 @@
   （自然码/小鹤/微软）因离线未编造，待网络恢复以数据导入。
 - addon `candidates` 薄封装保持原签名，宿主零改动。
 
+### 数据导入（P0 收尾，网络恢复后落地）
+- 词库：导入 rime **luna_pinyin**（LGPL-3.0，出处与许可保留在文件头），
+  `compile` 产出 **70,055 词条 / 19,920 键**，`data/dicts/core.ior`（约 730 KB，
+  按仓库策略不入库，`scripts/install-core-dict.sh` 一键编译安装）。
+- `dict-tools` 权重解析增强：rime 词库的百分比权重（如 `99.93%`）按万分比
+  整数化；零权重（`0`/`0%`）按 rime 语义视为**剔除条目**而非权重 1。
+- 双拼真实键位表：新增 `scripts/convert-rime-double-pinyin.py`，对上游
+  rime-double-pinyin schema 的 `algebra` 规则逐音节**求值**，转出自然碼/
+  小鶴/微軟三张键位表（`data/double-pinyin/*.tsv`，GPL-3.0 出处注明），零冲突。
+- `engine-core` 双拼框架扩展：支持多字母声母行（`zh/ch/sh<TAB>key`）、
+  同键多零声母音节（自然碼 `e/ei/en/eng/er` 共享 e 键）、`;` 键
+  （微軟 `ing=;`）；三张真实表对 404 音节逐码回环单测（仅 `lo`/`luo`
+  方案固有碰撞，显式登记）。
+
+### P2 = M2b：整句解码（`.gram` n-gram 语言模型 + beam search）
+- `.gram` v1 二进制语言模型格式（规范以 `engine-core/src/lm.rs` 模块文档为权威）：
+  24 字节头（magic `IOGRAM` + version + order + 4×u32 LE 计数）+ unigram/bigram/trigram
+  三段（索引区 `varint(len)+utf8 key` 严格升序、值区 varint 计数，varint 与 `.ior` v2
+  同为严格 LEB128）。engine-core 零 I/O 读取（`lm::from_gram_bytes(&[u8])`，损坏输入
+  报 offset/key 序号）；引擎内部 packed key（unigram u32、bigram/trigram 3×21 bit u64），
+  打分零字符串分配。
+- dict-tools 新增 `train <in> <out.gram>`（ior TSV / rime dict.yaml 自动识别 → 词表内
+  **字符级** n-gram，按词频加权、窗口不跨词边界——离线仅有词表可作语料，语料级模型待
+  真实数据）与 `lminspect`（计数/总权重/top key 校验读取）；`gram.rs` 双端 golden bytes
+  互锁（47 字节样本）。
+- 整句 beam search（`engine-core/beam.rs` + `beam_search.rs`，纯函数、每轮新 Vec）：
+  词 lattice（每起点×词长探测拼写变体，含 `(0,n)` 全句 key 覆盖用户整句学习）+
+  bucket-per-position 搜索（按位置分桶、sort+dedup+truncate 修剪）；打分 = Stupid
+  Backoff 三元回退（惩罚 0.4/级，OOV 伪计数 0.5 杜绝 -inf）+ `freq_weight·ln(dict_freq)`
+  + `user_weight·ln(USER_BOOST+user_freq)` + 整句完成加成；`BeamParams` 全量可调
+  （默认 beam_width 8），不新增 EngineConfig 字段。
+- 接线：`decoder::candidates_with_lm(dict,user,Option<&GramModel>,fuzzy,raw,limit)`——
+  无模型/简拼/不可切分/音节数 < `MIN_BEAM_SYLLABLES`(3)/beam_width=0 一律回退旧三步
+  拼装；beam 结果尾部合并旧路径候选（去重、按 limit 截断），任何输入不劣于 M0。
+  `session.rs` 未动（禁碰），宿主层后续接线。
+- bench：新增场景 [4] 整句解码（dict-tools 训练 → engine-core beam 计时，兼作跨 crate
+  格式互锁）与 `--help`；fixture 8 音节整句 P50 约 107 µs，top1 = 今天天气不错很好
+  （LM 链式打分胜过 金田…）。`crates/bench/tests/gram_interlock.rs`：常量对齐、
+  字节互认、整句端到端、坏模型拒收。
+
 ### CI 与工程
 - `.github/workflows/ci.yml`：fmt/clippy/test + 行数红线（400/800 规范脚本
   `scripts/check_line_limits.sh`）+ bench 参考性回归（P0 基线门禁不阻断）。
+
+### P4 = M3.5：配置体系第一步（新 crate `ior-config`）
+- **TOML 子集解析器**（零第三方依赖、无 unsafe、纯函数）：`[section]`/`[a.b]`
+  表头、`key = value`（含点分键）、基本字符串（`\" \\ \n \t \u{XXXX}`）、
+  十进制整数、布尔、单行数组（嵌套一层）、`#` 注释；解析失败一律返回带
+  1-based 行/列的 `ParseError`（`line N, column M: ...`），绝不 panic。
+  多行字符串/浮点/日期/内联表/`[[数组表]]`/重复表头/数字键等越界语法给出
+  明确报错。
+- **配置 schema**（`model.rs`/`schema.rs`）：键名与默认值 1:1 对齐
+  `engine-core/config.rs`（`engine.shift_action`=`commit|temp|none`、
+  `engine.double_pinyin`=`off|custom`（真实双拼方案枚举待 P1 数据导入）、
+  `chinese_punct`/`user_learning`/`page_size`/`max_candidates`、
+  `[engine.fuzzy]` 8 开关、`switches.<name>` 动态布尔表、`punct.<name>`
+  字符映射占位）；错误带点分路径（如 `engine.shift_action: expected one
+  of ...`），未知键收集为 warnings 不阻断加载。
+- **用户 patch 叠加**（`patch.rs`）：`apply(default, user) -> Result<Config,
+  String>` 深合并（表内按键合并、数组整体替换、类型不匹配报带路径错误）；
+  `serialize_config/serialize_table` 输出确定性格式（标量在前、表头在后、
+  2 空格缩进、插入序键序），parse→serialize→parse 语义等价。
+- 本批只做 crate 本身：未接线 FFI/addon，未改动任何现有 crate 运行时行为
+  （除 workspace members 一行）。
 
 ### 验证
 - `cargo test --workspace`：**193/193** 通过（+35）；`clippy -D warnings`、

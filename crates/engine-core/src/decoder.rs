@@ -19,12 +19,23 @@
 //! and every segmentation key is expanded with
 //! [`spelling::key_variants`] before probing the dictionary or the user
 //! dictionary. Hits found through several variants are merged — the same
-//! hanzi keeps its highest frequency, never a sum. M2 (P2) replaces the
-//! assembly with a trigram language model plus beam search over the same
-//! variant sets.
+//! hanzi keeps its highest frequency, never a sum.
+//!
+//! P2 (M2b) adds a second decoding path: [`candidates_with_lm`] routes
+//! inputs of ≥ [`crate::beam::MIN_BEAM_SYLLABLES`] syllables to
+//! [`crate::beam`] (word lattice + trigram LM + beam search) when the
+//! caller supplies a [`crate::lm::GramModel`]. The three-step assembly
+//! above stays the path for 1–2 syllable inputs, 简拼, inputs without a
+//! full segmentation, and callers without a model — and it is merged in
+//! as the tail of beam results, so beam output is never thinner than the
+//! legacy output. The lattice probes dictionaries through the very same
+//! variant helpers used here ([`dict_lookup_variants`],
+//! [`user_lookup_variants`]).
 
+use crate::beam::{self, BeamParams};
 use crate::config::FuzzyConfig;
 use crate::dict::Dictionary;
+use crate::lm::GramModel;
 use crate::segmenter::segmentations;
 use crate::spelling;
 use crate::user_dict::{self, UserDict};
@@ -150,11 +161,50 @@ pub fn candidates_with(
     out
 }
 
+/// Produces up to `limit` candidates like [`candidates_with`], routing to
+/// whole-sentence beam search ([`crate::beam`]) when `lm` is `Some` and the
+/// input covers ≥ [`crate::beam::MIN_BEAM_SYLLABLES`] full-pinyin
+/// syllables. Without a model — or on short/简拼/unsegmentable inputs —
+/// this is exactly the legacy three-step assembly, so the M0 ordering
+/// guarantees hold wherever beam search does not apply. Hosts that own a
+/// `.gram` file call this instead of [`candidates_with`] (see
+/// [`crate::lm::from_gram_bytes`]).
+pub fn candidates_with_lm(
+    dict: &Dictionary,
+    user: Option<&UserDict>,
+    lm: Option<&GramModel>,
+    fuzzy: &FuzzyConfig,
+    raw: &str,
+    limit: usize,
+) -> Vec<Candidate> {
+    if limit > 0 {
+        if let Some(model) = lm {
+            let beam = beam::candidates(
+                dict,
+                user,
+                model,
+                fuzzy,
+                raw,
+                &BeamParams::defaults(),
+                limit,
+            );
+            if let Some(candidates) = beam {
+                return candidates;
+            }
+        }
+    }
+    candidates_with(dict, user, fuzzy, raw, limit)
+}
+
 /// Probes every spelling variant of `key` in the dictionary and merges the
 /// hits: the same hanzi keeps its **highest** frequency across variants
 /// (frequencies are never summed across spellings), the result re-sorted
 /// freq descending / hanzi ascending.
-fn dict_lookup_variants(dict: &Dictionary, fuzzy: &FuzzyConfig, key: &str) -> Vec<(String, u32)> {
+pub(crate) fn dict_lookup_variants(
+    dict: &Dictionary,
+    fuzzy: &FuzzyConfig,
+    key: &str,
+) -> Vec<(String, u32)> {
     let mut merged: Vec<(String, u32)> = Vec::new();
     for variant in spelling::key_variants(fuzzy, key, VARIANT_CAP) {
         if let Some(entries) = dict.lookup(&variant) {
@@ -171,7 +221,11 @@ fn dict_lookup_variants(dict: &Dictionary, fuzzy: &FuzzyConfig, key: &str) -> Ve
 }
 
 /// Same variant probing and max-frequency merge for user-dict entries.
-fn user_lookup_variants(user: &UserDict, fuzzy: &FuzzyConfig, key: &str) -> Vec<(String, u32)> {
+pub(crate) fn user_lookup_variants(
+    user: &UserDict,
+    fuzzy: &FuzzyConfig,
+    key: &str,
+) -> Vec<(String, u32)> {
     let mut merged: Vec<(String, u32)> = Vec::new();
     for variant in spelling::key_variants(fuzzy, key, VARIANT_CAP) {
         for (hanzi, freq) in user_dict::lookup(user, &variant) {
@@ -198,7 +252,7 @@ fn top_hanzi_any_variant(dict: &Dictionary, fuzzy: &FuzzyConfig, syl: &str) -> O
 /// All segmentation combinations of the `'`-separated runs of `raw`, ordered
 /// by fewest total segments first, then lexicographically. Empty when any
 /// run cannot be segmented.
-fn segmentation_combos(raw: &str) -> Vec<Vec<String>> {
+pub(crate) fn segmentation_combos(raw: &str) -> Vec<Vec<String>> {
     let mut combos: Vec<Vec<String>> = vec![Vec::new()];
     for run in raw.split('\'') {
         let segs = segmentations(run);
@@ -437,5 +491,100 @@ mod tests {
         let cands = candidates_with(&d, None, &FuzzyConfig::default(), "jt", 10);
         assert_eq!(cands[0].text, "今天");
         assert_eq!(cands[0].pinyin, "jin'tian");
+    }
+
+    // ---- P2 (M2b): beam-search integration -----------------------------
+
+    fn lm_fixture() -> (Dictionary, crate::lm::GramModel) {
+        (
+            crate::beam_search::tests::fixture_dict(),
+            crate::beam_search::tests::fixture_gram(),
+        )
+    }
+
+    #[test]
+    fn without_a_model_the_legacy_path_is_untouched() {
+        let d = Dictionary::builtin();
+        for raw in ["ni", "nihao", "jintiantianqibucuo", "jt", "nh"] {
+            assert_eq!(
+                candidates_with_lm(&d, None, None, &FuzzyConfig::default(), raw, 10),
+                candidates_with(&d, None, &FuzzyConfig::default(), raw, 10),
+                "no model must mean byte-identical legacy output for {raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn short_inputs_with_a_model_keep_the_legacy_ordering() {
+        let (d, gram) = lm_fixture();
+        // 1-2 syllables never enter the beam: 你 / 你好 stay first
+        assert_eq!(
+            candidates_with_lm(&d, None, Some(&gram), &FuzzyConfig::default(), "ni", 10)[0].text,
+            "你"
+        );
+        assert_eq!(
+            candidates_with_lm(&d, None, Some(&gram), &FuzzyConfig::default(), "ni'hao", 10)[0]
+                .text,
+            "你好"
+        );
+        // 简拼 keeps its own path even though it has >= 3 letters
+        let jianpin = candidates_with_lm(&d, None, Some(&gram), &FuzzyConfig::default(), "jt", 10);
+        assert_eq!(jianpin[0].text, "今天");
+    }
+
+    #[test]
+    fn long_input_with_a_model_decodes_the_whole_sentence() {
+        let (d, gram) = lm_fixture();
+        let cands = candidates_with_lm(
+            &d,
+            None,
+            Some(&gram),
+            &FuzzyConfig::default(),
+            "jintian'tianqi'bu'cuo",
+            10,
+        );
+        assert_eq!(cands[0].text, "今天天气不错");
+        assert_eq!(cands[0].pinyin, "jin'tian'tian'qi'bu'cuo");
+        // the unseparated spelling decodes identically
+        let glued = candidates_with_lm(
+            &d,
+            None,
+            Some(&gram),
+            &FuzzyConfig::default(),
+            "jintiantianqibucuo",
+            10,
+        );
+        assert_eq!(glued[0].text, "今天天气不错");
+    }
+
+    #[test]
+    fn user_learning_lifts_a_sentence_variant_above_the_default() {
+        let (d, gram) = lm_fixture();
+        let mut u = user_dict::new();
+        for _ in 0..3 {
+            user_dict::learn(&mut u, "bu'cuo", "补错");
+        }
+        let cands = candidates_with_lm(
+            &d,
+            Some(&u),
+            Some(&gram),
+            &FuzzyConfig::default(),
+            "jintian'tianqi'bu'cuo",
+            10,
+        );
+        assert_eq!(cands[0].text, "今天天气补错");
+        assert!(cands.iter().any(|c| c.text == "今天天气不错"));
+    }
+
+    #[test]
+    fn a_broken_model_is_rejected_at_parse_time_not_decode_time() {
+        let err = crate::lm::from_gram_bytes(b"NOPE").unwrap_err();
+        assert!(err.contains("bad magic"));
+        // callers that ignore the error simply decode without a model
+        let (d, _) = lm_fixture();
+        assert_eq!(
+            candidates_with_lm(&d, None, None, &FuzzyConfig::default(), "nihao", 10)[0].text,
+            "你好"
+        );
     }
 }

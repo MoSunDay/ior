@@ -88,11 +88,17 @@ P6=M4+/M5。
 
 ### P2（=M2b）整句解码 + LM
 
-- `.gram` 二进制 n-gram（trigram + backoff，量化）；训练脚本放
-  dict-tools 或 lm-tools。
-- **beam search** 替换 `decoder.rs` 三步拼装。
-- 排序统一为：**LM 分 + 词频 + 用户词频 + 码完整度**。
-- 验收：长句整句正确率基线报表。
+- ✅ `.gram` v1 二进制 n-gram（trigram + Stupid Backoff，varint 计数）：训练为
+  dict-tools `train`（词表内**字符级** n-gram、按词频加权——离线仅词表可作语料；
+  语料级模型待真实语料数据），`lminspect` 校验读取；engine-core `lm::from_gram_bytes`
+  零 I/O 解析（规范见 `engine-core/src/lm.rs` 模块文档，双端 golden bytes 互锁）。
+- ✅ beam search（`beam.rs`/`beam_search.rs`）：lattice + bucket 搜索接入
+  `decoder::candidates_with_lm`；无模型/简拼/短输入自动回退旧三步拼装，结果尾部
+  合并旧候选（任何输入不劣于 M0）。`session.rs`/宿主未接线（后续）。
+- ✅ 排序统一：LM 分（backoff 0.4/级 + OOV 伪计数）+ 词频 + 用户词频 + 整句完成加成
+  （`BeamParams` 可调，未动 `EngineConfig`）。
+- ⏳ 验收「长句整句正确率基线报表」待真实词库/语料（当前仅 bench fixture：
+  8 音节 P50 ≈ 107 µs、今天天气不错很好 胜出）。
 
 ### P3（=M3）用户词典持久化 + 自动造词（可与 P2 并行）
 

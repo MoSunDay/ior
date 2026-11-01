@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/engine-core",
     "crates/dict-tools",
+    "crates/ior-config",
     "crates/fcitx5-addon",
     "crates/voice",
     "crates/llm",

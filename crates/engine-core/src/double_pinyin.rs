@@ -1,29 +1,35 @@
 //! Double-pinyin framework (P1/M2a): a loadable key table plus the
 //! typed-code -> full-pinyin transform.
 //!
-//! **Data gap, on purpose:** the real scheme tables (自然码/小鹤/微软) are
-//! factual key-layout data that must not be reproduced from memory; the
-//! network being down, they are *not* bundled. A double-pinyin session
-//! therefore loads its table from host-supplied text via [`parse_tsv`]
-//! (roadmap: import the real tables into `data/` once network access is
-//! restored and feed them through this same loader).
+//! The real scheme tables (自然碼/小鶴/微軟) live in
+//! `data/double-pinyin/{natural,flypy,mspy}.tsv`, converted from the
+//! rime schema algebra by `scripts/convert-rime-double-pinyin.py`; the
+//! roundtrip tests below load them verbatim. A session can also load a
+//! custom table from host-supplied text via [`parse_tsv`].
 //!
 //! Table format (TSV, one rule per line, `#` comments and blanks skipped):
 //!
 //! ```text
 //! iang<TAB>d      # final "iang" is typed with key d in the final slot
+//! zh<TAB>v        # the zh initial is typed with key v in the initial slot
 //! 0a<TAB>o        # zero-initial syllable "a" uses key o in the initial slot
 //! ```
 //!
+//! Keys are one ASCII lowercase letter or `;` (微软雙拼 types `ing` as
+//! `;`). A final may appear on several keys (scheme aliases) and one
+//! zero key may carry several syllables (e.g. 自然碼 types `e`, `ei`,
+//! `en`, `eng`, `er` all with an `e` initial slot), disambiguated by the
+//! final key.
+//!
 //! Decode contract of [`to_full`]: the typed string is even-length and
 //! consumed as (initial-code, final-code) pairs per syllable. For each
-//! pair, a zero-initial match wins first (the initial code is a zero key
-//! and the final code resolves to the same syllable); otherwise the
-//! initial code is read as the initial letter itself and joined with every
-//! final keyed by the second code — the lexicographically smallest result
-//! that passes [`crate::syllable::is_syllable`] is used. Any unresolvable
-//! pair, odd length, or invalid produced syllable makes the whole
-//! transform return `None`.
+//! pair the first match wins in this order: (1) a zero-initial entry
+//! whose syllable is keyed by the final code, (2) a multi-letter initial
+//! row (`zh`/`ch`/`sh`), (3) the initial letter itself. Candidates are
+//! filtered through [`crate::syllable::is_syllable`]; the
+//! lexicographically smallest survivor is used. Any unresolvable pair,
+//! odd length, or invalid produced syllable makes the whole transform
+//! return `None`.
 
 use crate::syllable::is_syllable;
 
@@ -34,8 +40,12 @@ pub struct DpTable {
     /// may share one key; disambiguated by syllable validity).
     finals: Vec<(char, Vec<String>)>,
     /// Initial-slot key character -> the zero-initial syllable it stands
-    /// for (rows written `0a<TAB>o` in the table text).
+    /// for (rows written `0a<TAB>o` in the table text). Several syllables
+    /// may share one key.
     zero_initial: Vec<(char, String)>,
+    /// Multi-letter initial (zh/ch/sh) -> its initial-slot key character
+    /// (rows written `zh<TAB>v` in the table text).
+    initials: Vec<(String, char)>,
 }
 
 /// Parses table text into a [`DpTable`]. Rows are `final<TAB>key` (one
@@ -57,7 +67,8 @@ pub fn parse_tsv(text: &str) -> Result<DpTable, String> {
         let key = fields.next().unwrap_or("");
         if left.is_empty() || fields.next().is_some() || !single_ascii_key(key) {
             return Err(format!(
-                "line {lineno}: expected 'final<TAB>key' or '0syllable<TAB>key', got '{trimmed}'"
+                "line {lineno}: expected 'final<TAB>key', 'zh|ch|sh<TAB>key' or \
+                 '0syllable<TAB>key', got '{trimmed}'"
             ));
         }
         let key_char = key.chars().next().expect("validated above");
@@ -67,14 +78,19 @@ pub fn parse_tsv(text: &str) -> Result<DpTable, String> {
                     "line {lineno}: zero-initial '{syllable}' is not a syllable"
                 ));
             }
-            match table.zero_initial.iter_mut().find(|(k, _)| *k == key_char) {
-                Some((_, existing)) if existing != syllable => {
+            let pair = (key_char, syllable.to_string());
+            if !table.zero_initial.contains(&pair) {
+                table.zero_initial.push(pair);
+            }
+        } else if is_multi_letter_initial(left) {
+            match table.initials.iter().find(|(name, _)| name == left) {
+                Some((_, existing)) if *existing != key_char => {
                     return Err(format!(
-                        "line {lineno}: zero key '{key_char}' already maps to '{existing}'"
+                        "line {lineno}: initial '{left}' already keyed as '{existing}'"
                     ));
                 }
                 Some(_) => {}
-                None => table.zero_initial.push((key_char, syllable.to_string())),
+                None => table.initials.push((left.to_string(), key_char)),
             }
         } else {
             let finals = table
@@ -111,12 +127,27 @@ pub fn to_full(table: &DpTable, typed: &str) -> Option<String> {
 /// or initial-letter interpretation yields a valid syllable.
 fn decode_pair(table: &DpTable, initial_key: char, final_key: char) -> Option<String> {
     let finals = finals_of(table, final_key)?;
-    // zero-initial first: initial key is a zero key and the final key
-    // resolves to the very syllable that key stands for.
-    if let Some((_, syllable)) = table.zero_initial.iter().find(|(k, _)| *k == initial_key) {
-        if finals.iter().any(|f| f == syllable) {
-            return Some(syllable.clone());
-        }
+    // zero-initial first: initial key is a zero key and one of its
+    // syllables is keyed by the final code.
+    let mut zero: Vec<&String> = table
+        .zero_initial
+        .iter()
+        .filter(|(k, syllable)| *k == initial_key && finals.iter().any(|f| f == syllable))
+        .map(|(_, syllable)| syllable)
+        .collect();
+    zero.sort();
+    if let Some(syllable) = zero.into_iter().next() {
+        return Some(syllable.clone());
+    }
+    // multi-letter initials (zh/ch/sh) are typed with their own key.
+    if let Some((initial, _)) = table.initials.iter().find(|(_, k)| *k == initial_key) {
+        let mut candidates: Vec<String> = finals
+            .iter()
+            .map(|f| format!("{initial}{f}"))
+            .filter(|s| is_syllable(s))
+            .collect();
+        candidates.sort();
+        return candidates.into_iter().next();
     }
     // otherwise the initial code is the initial letter itself; pick the
     // smallest valid syllable deterministically.
@@ -138,12 +169,17 @@ fn finals_of(table: &DpTable, key: char) -> Option<&[String]> {
         .map(|(_, finals)| finals.as_slice())
 }
 
-/// A table key must be exactly one ASCII lowercase letter (real schemes
-/// only ever key finals onto letters; `;` style keys stay out of scope
-/// until the real tables are imported).
+/// A table key must be exactly one ASCII lowercase letter or `;` (the
+/// key 微软雙拼 uses for the `ing` final).
 fn single_ascii_key(key: &str) -> bool {
     let mut chars = key.chars();
-    matches!(chars.next(), Some('a'..='z')) && chars.next().is_none()
+    matches!(chars.next(), Some('a'..='z' | ';')) && chars.next().is_none()
+}
+
+/// The initials that need an explicit row because they are typed as one
+/// key of their own (zh/ch/sh); single-letter initials are the key itself.
+fn is_multi_letter_initial(name: &str) -> bool {
+    matches!(name, "zh" | "ch" | "sh")
 }
 
 #[cfg(test)]
@@ -187,13 +223,16 @@ mod tests {
             err.contains("line 4") && err.contains("syllable"),
             "err: {err}"
         );
-        let err = parse_tsv("0a\to\n0e\to\n").unwrap_err();
+        // one zero key may carry several syllables (real schemes do this)
+        let t = parse_tsv("0a\to\n0e\to\n").expect("shared zero key");
+        assert_eq!(t.zero_initial.len(), 2);
+        let err = parse_tsv("zh\tv\nzh\tw\n").unwrap_err();
         assert!(
-            err.contains("line 2") && err.contains("zero key"),
+            err.contains("line 2") && err.contains("initial 'zh'"),
             "err: {err}"
         );
         // exact duplicates are fine
-        assert!(parse_tsv("in\tl\nin\tl\n").is_ok());
+        assert!(parse_tsv("in\tl\nin\tl\n0a\to\n0a\to\n").is_ok());
     }
 
     #[test]
@@ -223,6 +262,16 @@ mod tests {
     }
 
     #[test]
+    fn initial_rows_decode_zh_ch_sh_and_semicolon_keys() {
+        let t = parse_tsv("an\tj\nzh\tv\ning\t;\nb\tb\n").expect("initial table");
+        // v + j = zhan; b + ; = bing
+        assert_eq!(to_full(&t, "vj").as_deref(), Some("zhan"));
+        assert_eq!(to_full(&t, "b;").as_deref(), Some("bing"));
+        // unknown initial key that is not a letter-initial
+        assert_eq!(to_full(&t, "uj"), None);
+    }
+
+    #[test]
     fn to_full_picks_the_smallest_valid_candidate_deterministically() {
         // one key holding two finals: "i" and "in"-style ambiguity is
         // resolved by syllable validity, then lexicographic order.
@@ -236,5 +285,114 @@ mod tests {
         let t = DpTable::default();
         assert_eq!(to_full(&t, "ni"), None);
         assert_eq!(to_full(&t, ""), None);
+    }
+    // ---- real scheme tables (converted from rime schema algebra) ----
+
+    const NATURAL: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../data/double-pinyin/natural.tsv"
+    ));
+    const FLYPY: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../data/double-pinyin/flypy.tsv"
+    ));
+    const MSPY: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../data/double-pinyin/mspy.tsv"
+    ));
+
+    /// Every typed code for `syll` under `t`: initial-slot key (initial
+    /// row, the letter itself, or any zero key) crossed with every
+    /// final-slot key carrying the syllable's final.
+    fn codes_for(t: &DpTable, syll: &str) -> Vec<String> {
+        let initial = ["zh", "ch", "sh"]
+            .iter()
+            .find(|i| syll.starts_with(*i))
+            .map_or_else(
+                || {
+                    let first = syll.chars().next().expect("non-empty");
+                    if "bpmfdtnlgkhjqxrzcsyw".contains(first) {
+                        first.to_string()
+                    } else {
+                        String::new()
+                    }
+                },
+                |i| (*i).to_string(),
+            );
+        let fin = &syll[initial.len()..];
+        let mut final_keys: Vec<char> = t
+            .finals
+            .iter()
+            .filter(|(_, finals)| finals.iter().any(|f| f == fin))
+            .map(|(k, _)| *k)
+            .collect();
+        final_keys.sort_unstable();
+        let initial_keys: Vec<char> = if initial.is_empty() {
+            let mut keys: Vec<char> = t
+                .zero_initial
+                .iter()
+                .filter(|(_, s)| s == syll)
+                .map(|(k, _)| *k)
+                .collect();
+            keys.sort_unstable();
+            keys
+        } else {
+            match t.initials.iter().find(|(name, _)| name == &initial) {
+                Some((_, k)) => vec![*k],
+                None => vec![initial.chars().next().expect("single-letter initial")],
+            }
+        };
+        initial_keys
+            .into_iter()
+            .flat_map(|i| final_keys.iter().map(move |f| format!("{i}{f}")))
+            .collect()
+    }
+
+    /// Roundtrips every syllable through its scheme code(s). Codes that
+    /// are genuinely shared by two syllables (scheme-inherent collisions
+    /// such as 自然碼's `lo`/`luo` both being typed `lo`) must decode to
+    /// one of the colliding syllables and stay a fixed point.
+    fn roundtrip_scheme(label: &str, text: &str, expected_collisions: &[(&str, &str)]) {
+        let t = parse_tsv(text).unwrap_or_else(|err| panic!("{label}: {err}"));
+        let mut collisions = Vec::new();
+        for syll in crate::syllable::SYLLABLES {
+            let codes = codes_for(&t, syll);
+            assert!(!codes.is_empty(), "{label}: no code for {syll}");
+            for code in codes {
+                let decoded = to_full(&t, &code)
+                    .unwrap_or_else(|| panic!("{label}: '{code}' for {syll} does not decode"));
+                if decoded == *syll {
+                    continue;
+                }
+                // collision: decoded must be another syllable sharing the code
+                assert!(
+                    codes_for(&t, &decoded).contains(&code),
+                    "{label}: '{code}' ({syll}) decoded to unrelated '{decoded}'"
+                );
+                collisions.push(((*syll).to_string(), decoded));
+            }
+        }
+        collisions.sort();
+        collisions.dedup();
+        let expected: Vec<(String, String)> = expected_collisions
+            .iter()
+            .map(|(a, b)| ((*a).to_string(), (*b).to_string()))
+            .collect();
+        assert_eq!(collisions, expected, "{label}: collision set drifted");
+    }
+
+    #[test]
+    fn natural_table_roundtrips_every_syllable() {
+        roundtrip_scheme("natural", NATURAL, &[("luo", "lo")]);
+    }
+
+    #[test]
+    fn flypy_table_roundtrips_every_syllable() {
+        roundtrip_scheme("flypy", FLYPY, &[("luo", "lo")]);
+    }
+
+    #[test]
+    fn mspy_table_roundtrips_every_syllable() {
+        roundtrip_scheme("mspy", MSPY, &[("luo", "lo")]);
     }
 }

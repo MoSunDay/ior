@@ -26,6 +26,10 @@ pub enum Command {
     Compile { input: String, output: String },
     /// `validate <in> [--dump-syllables]`
     Validate { input: String, dump_syllables: bool },
+    /// `train <in> <out.gram>` (ior TSV or rime dict.yaml)
+    Train { input: String, output: String },
+    /// `lminspect <in.gram>`
+    LmInspect { input: String },
     /// `-h` / `--help`
     Help,
 }
@@ -107,6 +111,14 @@ pub fn parse_args(args: &[String]) -> Result<Command, String> {
             Ok(Command::Compile { input, output })
         }
         "validate" => parse_validate(rest),
+        "train" => {
+            let [input, output] = two_positional(rest, "train <in> <out.gram>")?;
+            Ok(Command::Train { input, output })
+        }
+        "lminspect" => {
+            let [input] = one_positional(rest, "lminspect <in.gram>")?;
+            Ok(Command::LmInspect { input })
+        }
         other => Err(format!("unknown subcommand '{other}' (try --help)")),
     }
 }
@@ -324,7 +336,66 @@ fn execute<W: Write>(command: &Command, out: &mut W) -> Result<(), Error> {
             }
             Ok(())
         }
+        Command::Train { input, output } => {
+            let text = read_text(input)?;
+            let source = crate::source::load_source(&text)
+                .map_err(|err| Error::Format(format!("{input}: {err}")))?;
+            let entries = crate::format::normalize(source.entries);
+            let counts = crate::gram::train_counts(&entries);
+            let bytes = counts.to_gram_bytes();
+            write_bytes(output, &bytes)?;
+            report_duplicate_note(out, source.duplicate_pairs)?;
+            report(
+                out,
+                &format!(
+                    "trained {output}: {} unigram / {} bigram / {} trigram keys, total weight {}, {} bytes",
+                    crate::gram::unigrams(&counts).len(),
+                    crate::gram::bigrams(&counts).len(),
+                    crate::gram::trigrams(&counts).len(),
+                    crate::gram::total_weight(&counts),
+                    bytes.len()
+                ),
+            )
+        }
+        Command::LmInspect { input } => {
+            let bytes = read_bytes(input)?;
+            let counts = crate::gram::parse_gram(&bytes)
+                .map_err(|err| Error::Format(format!("{input}: {err}")))?;
+            writeln!(out, "file: {input}").map_err(io_error)?;
+            writeln!(
+                out,
+                "unigrams: {}, bigrams: {}, trigrams: {}, total weight: {}",
+                crate::gram::unigrams(&counts).len(),
+                crate::gram::bigrams(&counts).len(),
+                crate::gram::trigrams(&counts).len(),
+                crate::gram::total_weight(&counts),
+            )
+            .map_err(io_error)?;
+            write_top_grams(out, "unigram", crate::gram::unigrams(&counts))?;
+            write_top_grams(out, "bigram", crate::gram::bigrams(&counts))
+        }
     }
+}
+
+/// How many top keys `lminspect` prints per section.
+const TOP_GRAMS: usize = 10;
+
+/// Print the highest-count n-grams of one section (tiebreak on key).
+fn write_top_grams<W: Write>(
+    out: &mut W,
+    name: &str,
+    section: &std::collections::BTreeMap<String, u64>,
+) -> Result<(), Error> {
+    writeln!(out, "top {name}s by count:").map_err(io_error)?;
+    if section.is_empty() {
+        return writeln!(out, "  (none)").map_err(io_error);
+    }
+    let mut ranked: Vec<(&String, &u64)> = section.iter().collect();
+    ranked.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+    for (rank, (key, count)) in ranked.iter().take(TOP_GRAMS).enumerate() {
+        writeln!(out, "{:>4}. {:>6}  {}", rank + 1, count, key).map_err(io_error)?;
+    }
+    Ok(())
 }
 
 /// Count distinct pinyin keys among `entries` (normalize output is sorted,

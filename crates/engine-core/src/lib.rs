@@ -15,20 +15,29 @@
 //! - [`dict`]: static pinyin -> hanzi dictionary (canonical keys, initials
 //!   index for 简拼);
 //! - [`user_dict`]: learned frequencies;
+//! - [`lm`]: character n-gram language model parsed from `.gram` bytes
+//!   (P2/M2b; the format spec lives in its module docs);
+//! - [`beam`]/[`beam_search`]: whole-sentence beam search over the word
+//!   lattice, scored by the LM (P2/M2b);
 //! - [`punct`]: Chinese punctuation mapping (data-driven, paired quotes);
-//! - [`decoder`]: candidate assembly for a raw input (M2: trigram + beam
-//!   search replaces this);
+//! - [`decoder`]: candidate assembly for a raw input — legacy three-step
+//!   path, plus the [`decoder::candidates_with_lm`] beam routing;
 //! - [`session`]: key handling, preedit, commit and learning.
 //!
-//! Roadmap: trigram/beam-search decoding in M2 (P2), additional fuzzy rules
-//! with the same query-side pipeline, real double-pinyin scheme tables
-//! pending data import (see [`double_pinyin`]), simplified/traditional (U)
-//! and v-mode (V) input modes in M4.
+//! Roadmap: additional fuzzy rules with the same query-side pipeline, real
+//! double-pinyin scheme tables pending data import (see
+//! [`double_pinyin`]), simplified/traditional (U) and v-mode (V) input
+//! modes in M4; corpus-level LM data to replace the word-list-derived
+//! counts (P2 follow-up).
 
+pub mod beam;
+pub mod beam_search;
 pub mod config;
 pub mod decoder;
 pub mod dict;
 pub mod double_pinyin;
+pub mod lm;
+mod lm_format;
 pub mod punct;
 pub mod segmenter;
 pub mod session;
@@ -37,14 +46,17 @@ pub mod syllable;
 pub mod user_dict;
 pub mod user_dict_store;
 
+pub use beam::{candidates as beam_candidates, BeamParams, MIN_BEAM_SYLLABLES};
 pub use config::{
     default_config, normalize_syllable, DoublePinyin, EngineConfig, FuzzyConfig, ShiftAction,
 };
 pub use decoder::{
-    candidates as decode_candidates, candidates_with as decode_candidates_with, Candidate,
+    candidates as decode_candidates, candidates_with as decode_candidates_with,
+    candidates_with_lm as decode_candidates_with_lm, Candidate,
 };
 pub use dict::Dictionary;
 pub use double_pinyin::{parse_tsv as dp_parse_table, to_full as dp_to_full, DpTable};
+pub use lm::{from_gram_bytes, GramModel, BACKOFF_PENALTY, GRAM_MAGIC, GRAM_ORDER, GRAM_VERSION};
 pub use punct::{map as punct_map, new as new_punct, reset as punct_reset, PunctOut, PunctState};
 pub use segmenter::{best_segmentation, segmentations};
 pub use session::{

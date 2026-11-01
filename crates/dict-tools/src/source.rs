@@ -92,8 +92,11 @@ fn load_tsv(text: &str) -> Result<Source, String> {
             ));
         }
         let pinyin = canonical_pinyin(fields[0]);
-        let freq = parse_freq(fields.get(2).copied(), lineno)?;
         validate_raw_pinyin(fields[0], lineno)?;
+        let Some(freq) = parse_freq(fields.get(2).copied(), lineno)? else {
+            // the tombstone convention applies to rime dicts only
+            return Err(format!("line {lineno}: freq 0 must be >= 1"));
+        };
         validate_entry(&pinyin, fields[1], freq, lineno)?;
         collector.push(pinyin, fields[1].to_string(), freq);
     }
@@ -130,8 +133,10 @@ fn load_rime(text: &str) -> Result<Source, String> {
         }
         let hanzi = fields[0];
         let pinyin = canonical_pinyin(fields[1]);
-        let freq = parse_freq(fields.get(2).copied(), lineno)?;
         validate_raw_pinyin(fields[1], lineno)?;
+        let Some(freq) = parse_freq(fields.get(2).copied(), lineno)? else {
+            continue; // zero weight = removed entry (rime tombstone)
+        };
         validate_entry(&pinyin, hanzi, freq, lineno)?;
         collector.push(pinyin, hanzi.to_string(), freq);
     }
@@ -151,13 +156,32 @@ fn split_columns(line: &str) -> Vec<&str> {
 }
 
 /// Parse the optional frequency/weight column.
-fn parse_freq(raw: Option<&str>, lineno: usize) -> Result<u32, String> {
-    match raw {
-        None => Ok(1),
-        Some(field) => field
-            .parse::<u32>()
-            .map_err(|err| format!("line {lineno}: invalid freq '{field}': {err}")),
+///
+/// Accepts a plain integer (`42`) or a rime percentage weight
+/// (`99.93%`), which real dicts use for multi-pronunciation
+/// disambiguation. Percentages scale to per-10000 integers. A zero
+/// weight (plain `0` or rounding from e.g. `0%`) is rime's tombstone
+/// convention: the entry is skipped rather than kept at weight 1.
+fn parse_freq(raw: Option<&str>, lineno: usize) -> Result<Option<u32>, String> {
+    let Some(field) = raw else { return Ok(Some(1)) };
+    if let Some(pct) = field.strip_suffix('%') {
+        let value = pct
+            .trim()
+            .parse::<f64>()
+            .map_err(|err| format!("line {lineno}: invalid percentage weight '{field}': {err}"))?;
+        if !(0.0..=100.0).contains(&value) {
+            return Err(format!(
+                "line {lineno}: percentage weight '{field}' outside 0..=100"
+            ));
+        }
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let scaled = (value * 100.0).round() as u32;
+        return Ok((scaled > 0).then_some(scaled));
     }
+    let freq = field
+        .parse::<u32>()
+        .map_err(|err| format!("line {lineno}: invalid freq '{field}': {err}"))?;
+    Ok((freq > 0).then_some(freq))
 }
 
 /// Structural validation of the raw pinyin field: separator shape must be
@@ -313,6 +337,19 @@ mod tests {
     }
 
     #[test]
+    fn parses_percentage_weights_from_real_rime_dicts() {
+        // rime's multi-pronunciation rows carry probability weights.
+        let text = "\u{4e01}\tding\t99.93%\n\u{4e01}\tzheng\t0.07%\n\u{4e07}\twan\t100%\n\u{4e09}\tsa\t0%\n";
+        let source = load_source(&format!("# c\n...\n{text}")).unwrap();
+        let freqs: Vec<u32> = source.entries.iter().map(|e| e.freq).collect();
+        // the 0% row is a tombstone and must be skipped
+        assert_eq!(freqs, vec![9993, 7, 10000]);
+        let err = parse_freq(Some("120%"), 3).unwrap_err();
+        assert!(err.contains("line 3") && err.contains("100"));
+        assert!(parse_freq(Some("99.9%%"), 4).is_err());
+    }
+
+    #[test]
     fn counts_duplicates_instead_of_erroring() {
         let source = load_source(&format!("a\t{KAI}\t1\na\t{KAI}\t2\n")).unwrap();
         assert_eq!(source.duplicate_pairs, 1);
@@ -337,9 +374,13 @@ mod tests {
 
     #[test]
     fn validation_rejects_bad_freq_and_hanzi() {
+        // ior TSV keeps the freq >= 1 rule...
         assert!(load_source(&format!("a\t{KAI}\t0\n"))
             .unwrap_err()
             .contains("must be >= 1"));
+        // ...while rime zero weight drops the entry (its tombstone convention)
+        let source = load_source(&format!("...\na\t{KAI}\t0\n")).unwrap();
+        assert!(source.entries.is_empty());
         assert!(load_source("a\t\t5\n").unwrap_err().contains("empty hanzi"));
         assert!(load_source("a\t{KAI}\tx\n")
             .unwrap_err()

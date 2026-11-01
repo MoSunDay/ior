@@ -1,0 +1,12 @@
+[package]
+name = "ior-config"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "ior configuration: TOML-subset parser, config schema and user patch overlay (zero dependencies)"
+
+[lib]
+name = "ior_config"
+path = "src/lib.rs"
+
+[dependencies]

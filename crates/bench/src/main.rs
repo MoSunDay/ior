@@ -6,16 +6,38 @@
 //!     `Dictionary::lookup` P50/P99 (target: single lookup < 10 µs),
 //!     cross-checked against bytes written by dict-tools itself.
 //!  3. engine-core `decoder::candidates` latency per raw input.
+//!  4. P2/M2b sentence decode: dict-tools trains a `.gram` model,
+//!     engine-core beam-searches ≥ 8-syllable inputs (live cross-crate
+//!     format interlock).
 //!
 //! Timing uses `std::time::Instant` with median-of-runs / percentile
 //! statistics; there are no external dependencies (no criterion).
 
+mod sentence;
 mod synth;
 
 use dict_tools::format as dt_format;
 use engine_core::decoder;
 use engine_core::dict::Dictionary;
 use std::time::Instant;
+
+/// Usage text printed for `--help` / `-h`.
+const USAGE: &str = "\
+ior-bench: hand-timed performance scenarios for the dictionary stack
+
+USAGE:
+    ior-bench [--help]
+
+OPTIONS:
+    -h, --help    print this help and exit
+
+SCENARIOS (all run, in order):
+    [1] dict-tools compile of a synthetic 100k-entry TSV
+    [2] engine-core .ior load + key lookup latency
+    [3] engine-core legacy decoder candidates per input
+    [4] P2/M2b sentence decode: dict-tools trains a .gram model,
+        engine-core beam-searches 8-syllable inputs (also a live
+        cross-crate .gram format interlock)";
 
 /// Synthetic workload size for the compile scenario.
 const ENTRY_COUNT: usize = 100_000;
@@ -39,10 +61,23 @@ const DECODE_RUNS: usize = 2_000;
 const DECODE_WARMUP: usize = 100;
 
 fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match args.first().map(String::as_str) {
+        None => {}
+        Some("-h") | Some("--help") => {
+            println!("{USAGE}");
+            return;
+        }
+        Some(other) => {
+            eprintln!("ior-bench: unknown argument '{other}' (try --help)");
+            std::process::exit(2);
+        }
+    }
     let compile = scenario_compile();
     let (load, dict, bytes) = scenario_load(&compile.output_bytes);
     let decode = scenario_decode(&dict);
-    print_report(&compile.rows, &load, &decode, &bytes);
+    let sentence = sentence::scenario();
+    print_report(&compile.rows, &load, &decode, &sentence, &bytes);
 }
 
 /// One scenario's report rows plus artifacts later scenarios consume.
@@ -235,6 +270,7 @@ fn print_report(
     compile: &[(String, String)],
     load: &LoadOutcome,
     decode: &[Vec<(String, String)>],
+    sentence: &[(String, String)],
     bytes: &[u8],
 ) {
     println!("ior-bench  (std-only timing, medians/percentiles over Instant)");
@@ -252,6 +288,9 @@ fn print_report(
     for input_rows in decode {
         print_rows(input_rows);
     }
+    println!();
+    println!("[4] P2/M2b sentence decode - beam search with a dict-tools .gram model");
+    print_rows(sentence);
 }
 
 /// Print one `label | value` table with aligned columns.
