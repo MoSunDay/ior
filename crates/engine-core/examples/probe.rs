@@ -51,6 +51,11 @@ fn main() {
         );
     }
     for (label, cfg, input) in [
+        ("partial n", EngineConfig::default(), "n"),
+        ("partial ni", EngineConfig::default(), "ni"),
+        ("partial nih", EngineConfig::default(), "nih"),
+        ("partial niha", EngineConfig::default(), "niha"),
+        ("partial nihao", EngineConfig::default(), "nihao"),
         ("full tianqi", EngineConfig::default(), "tianqi"),
         ("full jintian", EngineConfig::default(), "jintian"),
         ("full nihao", EngineConfig::default(), "nihao"),

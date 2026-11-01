@@ -11,7 +11,10 @@
 //! A secondary **initials index** (`BTreeMap<String, Vec<String>>`) maps the
 //! first letters of each syllable of a key (`ni'hao` -> `nh`, `xi'an` -> `xa`)
 //! to the keys sharing them, powering simplified-pinyin (简拼) lookups via
-//! [`Dictionary::lookup_initials`].
+//! [`Dictionary::lookup_initials`]. A third index stores every key sorted by
+//! its separator-free spelling (`ni'hao` -> `nihao`) so unfinished inputs
+//! such as `nih` can still offer the longest matching vocabulary entries via
+//! [`Dictionary::lookup_prefix`].
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -230,6 +233,9 @@ pub struct Dictionary {
     /// First letters of every syllable (`ni'hao` -> `nh`) -> canonical keys
     /// sharing them, each list deduped and lexicographically sorted.
     initials: BTreeMap<String, Vec<String>>,
+    /// Canonical keys sorted by their separator-free spelling, used for
+    /// prefix fallback candidates on unfinished input.
+    prefix_keys: Vec<String>,
 }
 
 impl Dictionary {
@@ -340,6 +346,14 @@ impl Dictionary {
         keys
     }
 
+    /// Prefix fallback for unfinished input: up to `limit` entries whose
+    /// canonical key starts with `prefix` after separators are ignored
+    /// (`nih` reaches `ni'hao`, `n` reaches every `n*` syllable). See
+    /// [`crate::prefix_index`].
+    pub fn lookup_prefix(&self, prefix: &str, limit: usize) -> Vec<(String, String, u32)> {
+        crate::prefix_index::lookup(&self.prefix_keys, &self.entries, prefix, limit)
+    }
+
     /// Number of distinct keys.
     pub fn len(&self) -> usize {
         self.entries.len()
@@ -369,6 +383,7 @@ impl Dictionary {
             sort_values(entry);
         }
         self.initials = build_initials_index(&self.entries);
+        self.prefix_keys = crate::prefix_index::build(&self.entries);
     }
 }
 
@@ -395,11 +410,16 @@ fn dictionary_from_raw(raw: Vec<RawEntry>) -> Dictionary {
     dictionary_from_parts(entries)
 }
 
-/// Wraps a filled entry map into a [`Dictionary`] with a fresh initials
-/// index (shared by the TSV and `.ior` loading paths).
+/// Wraps a filled entry map into a [`Dictionary`] with fresh lookup
+/// indexes (shared by the TSV and `.ior` loading paths).
 fn dictionary_from_parts(entries: HashMap<String, Vec<(String, u32)>>) -> Dictionary {
     let initials = build_initials_index(&entries);
-    Dictionary { entries, initials }
+    let prefix_keys = crate::prefix_index::build(&entries);
+    Dictionary {
+        entries,
+        initials,
+        prefix_keys,
+    }
 }
 
 /// First letter of every syllable of a canonical key: `ni'hao` -> `nh`,
@@ -557,6 +577,14 @@ mod tests {
         assert_eq!(a.lookup("shi").unwrap()[0].1, 7);
         assert_eq!(a.lookup("hao").unwrap()[0].1, 2);
         assert_eq!(a.len(), 3);
+    }
+
+    #[test]
+    fn merge_rebuilds_prefix_index() {
+        let mut d = Dictionary::from_tsv("shi\t是\t5\n").unwrap();
+        let extra = Dictionary::from_tsv("ni'hao\t你好\t7\n").unwrap();
+        d.merge(&extra);
+        assert_eq!(d.lookup_prefix("nih", 10)[0].1, "你好");
     }
 
     #[test]

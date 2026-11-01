@@ -13,7 +13,10 @@
 //!  5. single-syllable inputs need no extra handling: step 3 already appends
 //!     every (non-top included) dictionary entry for that syllable;
 //!  6. 简拼 candidates (pure initial-letter input) are appended after all
-//!     full-pinyin ones, at most one per matching key.
+//!     full-pinyin ones, at most one per matching key;
+//!  7. when steps 1–6 yield nothing (unfinished input such as `nih` or `n`),
+//!     a prefix fallback probes keys whose separator-free spelling starts with
+//!     the typed letters and returns their highest-frequency entries.
 //!
 //! Fuzzy matching is **query-side** since P1: dictionary keys are canonical,
 //! and every segmentation key is expanded with
@@ -83,7 +86,9 @@ pub fn candidates(
 /// segmentation key through the spelling pipeline configured by `fuzzy`.
 /// Full-pinyin candidates come first (user-learned entries boosted ahead of
 /// dictionary hits); 简拼 candidates are appended when `raw` is a pure
-/// initial-letter run. Returns an empty `Vec` when nothing matches.
+/// initial-letter run. Unfinished input with no complete segmentation falls
+/// back to prefix matches (`nih` -> `你好`). Returns an empty `Vec` when
+/// nothing matches.
 pub fn candidates_with(
     dict: &Dictionary,
     user: Option<&UserDict>,
@@ -156,6 +161,20 @@ pub fn candidates_with(
         });
         for (_freq, hanzi, key) in picks {
             push_unique(&mut out, &mut seen, hanzi, key, limit);
+        }
+    }
+
+    // (e) Prefix fallback: an unfinished trailing syllable (or a bare initial)
+    // usually has no full segmentation. Show the longest vocabulary keys whose
+    // separator-free pinyin begins with what the user has typed. This is only
+    // consulted when nothing above produced a candidate, so complete inputs
+    // keep their existing ordering exactly.
+    if out.is_empty() {
+        for (key, hanzi, _freq) in dict.lookup_prefix(raw, limit) {
+            push_unique(&mut out, &mut seen, hanzi, key, limit);
+            if out.len() == limit {
+                break;
+            }
         }
     }
     out
@@ -322,11 +341,17 @@ mod tests {
     }
 
     #[test]
-    fn unsegmentable_input_yields_nothing() {
+    fn unfinished_input_uses_prefix_fallback() {
         let d = Dictionary::builtin();
-        assert!(candidates(&d, None, "nih", 10).is_empty());
+        let bare = candidates(&d, None, "n", 10);
+        assert!(!bare.is_empty());
+        assert!(bare.iter().any(|c| c.text == "你"), "bare: {bare:?}");
+        let partial = candidates(&d, None, "nih", 10);
+        assert_eq!(partial[0].text, "你好");
+        assert_eq!(partial[0].pinyin, "ni'hao");
         assert!(candidates(&d, None, "", 10).is_empty());
         assert!(candidates(&d, None, "ni'zh", 10).is_empty());
+        assert!(candidates(&d, None, "Ni", 10).is_empty());
     }
 
     #[test]
@@ -481,8 +506,12 @@ mod tests {
         assert_eq!(cands[0].text, "你");
         // separators disqualify 简拼 even when both runs are initials
         assert!(candidates_with(&d, None, &FuzzyConfig::default(), "n'h", 10).is_empty());
-        // single letter is not 简拼 either
-        assert!(candidates_with(&d, None, &FuzzyConfig::default(), "n", 10).is_empty());
+        // a single letter is not 简拼, but the unfinished-input prefix path
+        // still offers candidates
+        assert_eq!(
+            candidates_with(&d, None, &FuzzyConfig::default(), "n", 10)[0].text,
+            "你"
+        );
     }
 
     #[test]

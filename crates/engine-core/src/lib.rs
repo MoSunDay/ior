@@ -38,6 +38,7 @@ pub mod dict;
 pub mod double_pinyin;
 pub mod lm;
 mod lm_format;
+mod prefix_index;
 pub mod punct;
 pub mod segmenter;
 pub mod session;

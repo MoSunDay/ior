@@ -27,7 +27,7 @@
 | crate | 职责 |
 |-------|------|
 | `engine-core` | 纯 Rust 引擎：拼音切分、词库、词级/整句 beam 解码、用户自学习（无 UI、headless 可测） |
-| `dict-tools` | 独立词库工具链：TSV / rime `dict.yaml` ↔ `.ior` v2，build/inspect/export/merge/compile/validate/train |
+| `dict-tools` | 独立词库工具链：TSV / rime `dict.yaml` ↔ `.ior` v2，build/inspect/export/merge/compile/validate/train；`compile --simplify` 用 vendored OpenCC t2s 表输出简体 |
 | `ior-config` | 零依赖极简 TOML 子集 + 配置 schema/default/patch/校验（addon 启动加载） |
 | `bench` | 自研计时的性能与端到端互锁基准（编译/加载/查询/整句解码） |
 | `fcitx5-ior` (fcitx5-addon) | C ABI 桥（Rust，staticlib/cdylib）+ ≤500 行 C++ 薄壳接入 fcitx5 |
@@ -49,6 +49,9 @@ cargo run -p dict-tools -- inspect /tmp/extra.ior
 cargo run -p dict-tools -- export /tmp/extra.ior /tmp/extra-back.tsv
 cargo run -p dict-tools -- merge  /tmp/extra.ior /tmp/extra.ior -o /tmp/merged.ior
 cargo run -p dict-tools -- --help
+
+# 全量词库：安装脚本默认用 --simplify 在编译期转简体
+scripts/install-core-dict.sh
 
 # 二期模型下载计划（M0 仅打印清单，无网络请求）
 scripts/download_models.sh
@@ -108,13 +111,13 @@ an_ang = true
 | 阶段 | 内容 |
 |------|------|
 | **M0 ✅ 完成** | 骨架 + 薄壳 + 词级转换打通，GTK/Qt/XIM 三前端实测通过（2026-10-31，见 `docs/M0-FRONTEND-TEST.md`） |
-| **M1 (=P0) ✅ 完成** | `.ior` v2 + engine-core 加载/多词典叠加；luna + essay preset 编译 429,870 词条 / 9.4 MB，真机验证（`docs/M2-VERIFY.md`） |
+| **M1 (=P0) ✅ 完成** | `.ior` v2 + engine-core 加载/多词典叠加；luna + essay preset 经 OpenCC t2s 后 427,661 简体词条 / 9.4 MB，真机验证（`docs/M2-VERIFY.md`） |
 | **M2a (=P1) ✅ 完成** | 查询侧模糊音/简拼 + 自然碼/小鶴/微軟三套内置双拼，`config.toml` 可选 |
 | M2b (=P2) 🟡 词表模型可用 | `.gram` trigram + beam + bench/互锁 ✅；安装脚本训练/安装 `core.gram`，addon 启动加载，整句真机通过；真实语料模型与准确率基线待做 |
 | M3 (=P3) 🟡 部分 | 用户词典持久化（append-log+snapshot、时间衰减、TSV 备份）✅ 真机实测；整句自动造词待实现 |
 | M3.5 (=P4) 🟡 部分 | `ior-config` TOML/schema/patch + 启动映射 ✅；switches/punct 生效、热重载、配置 UI 待做 |
 | M4 (=P5) 🟡 部分 | 分页/标点/Shift 中英/FFI v2 ✅ 真机实测；以词定字/符号面板/per-IC/状态区/联想待做 |
-| M4+/M5 (=P6) | 简繁、评测体系（CI 门禁已落地）；反查与码表方案明确降级 backlog |
+| M4+/M5 (=P6) | 编译期简体（OpenCC t2s）✅、评测体系（CI 门禁）✅；运行时简繁切换、反查与码表方案为 backlog |
 | 二期 V1~V4 | 语音：V1 按键说话+VAD → V2 流式 ASR → V3 批量精解码 → V4 模型管理与下载 |
 
 完整差距对照与依赖图见 `docs/ROADMAP-RIME-PARITY.md`。
@@ -126,6 +129,8 @@ an_ang = true
 - **搜狗细胞词库（`.scel`/`.ssf`）不可分发**，转换数据不得入库；
 - 可用来源：rime `luna_pinyin`（开源）、CC-CEDICT（CC-BY-SA 4.0，需署名
   与同协议共享）、维基语料自建（遵循各自许可）；
+- 简体转换表来自 OpenCC ver.1.4.2（Apache-2.0），原样置于 `data/opencc/`，
+  来源与 sha256 见该目录 `README.md`；
 - 入库词库必须在文件头注明来源与许可证；模型文件（`*.onnx`/`*.gguf`）不入库。
 
 ## 仓库规范

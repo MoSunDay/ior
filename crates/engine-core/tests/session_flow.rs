@@ -88,15 +88,29 @@ fn every_ascii_key_is_handled_without_panicking() {
 }
 
 #[test]
-fn undecodable_input_passes_through_verbatim() {
+fn partial_input_commits_the_best_prefix_candidate() {
     let mut s = new_session(default_config());
     for ch in "nih".chars() {
+        assert_eq!(process_key(&mut s, ch), ProcessResult::Editing);
+    }
+    assert!(!session::candidates(&s, 10).is_empty());
+    assert_eq!(
+        process_key(&mut s, ' '),
+        ProcessResult::Committed("你好".to_string())
+    );
+    assert_eq!(preedit(&s), "");
+}
+
+#[test]
+fn undecodable_input_passes_through_verbatim() {
+    let mut s = new_session(default_config());
+    for ch in "xyz".chars() {
         assert_eq!(process_key(&mut s, ch), ProcessResult::Editing);
     }
     assert!(session::candidates(&s, 10).is_empty());
     assert_eq!(
         process_key(&mut s, ' '),
-        ProcessResult::Committed("nih".to_string())
+        ProcessResult::Committed("xyz".to_string())
     );
     assert_eq!(preedit(&s), "");
 }

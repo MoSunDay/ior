@@ -6,6 +6,25 @@
 
 规划全貌见 `docs/ROADMAP-RIME-PARITY.md`；本批覆盖 P0 / P5-lite / P3 / P1 / P2 / P4，并补齐 Rime preset vocabulary 的部署语义。
 
+### 默认简体与不完整输入前缀回退（2026-11-01）
+- `dict-tools compile` 新增 `--simplify`：构建期用 vendored OpenCC ver.1.4.2
+  t2s 表（`data/opencc/TSPhrases.txt` 最长短语优先 → `TSCharacters.txt`
+  单字回退）转换候选汉字，再按简化后的 `(key, hanzi)` 重新归一化去重。
+  引擎与运行时零 OpenCC 依赖；表为 Apache-2.0，来源与哈希见
+  `data/opencc/README.md`。
+- `scripts/install-core-dict.sh` 默认 `compile --simplify`。本轮改写 268,003
+  词条，简化后同音同形合并使词条数 429,870 → 427,661（293,168 keys 不变），
+  `.ior` 9,424,662 字节；`core.gram` 重新训练为 38,176 / 276,582 / 297,084
+  unigram / bigram / trigram。真机 `tianqi/jintian/nihao/zhongguo` →
+  天气 / 今天 / 你好 / 中国，`jintiantianqibucuo` → 今天天气不错。
+- `engine-core` 新增按「去 `'` 平铺拼写」排序的前缀索引；当完整拼式、
+  用户词、简拼等常规步骤均无候选时，`decoder` 用去分隔符的原始输入做前缀
+  回退，每 key 取最高频词条。完整输入候选顺序不变；`n` → 你、`nih` →
+  你会 / 你好、`nihao` 仍首选 你好。
+- 验证：`cargo test --workspace` 292/292（新增简化、前缀与端到端用例），
+  clippy / fmt / 行数门禁全绿；`engine-core/examples/probe` 加入
+  `n/ni/nih/niha/nihao` 回归样例。
+
 ### 品牌与第二轮复审（2026-11-01）
 - 新增自有图标 `assets/ior.svg`（含 48×48 PNG 变体）；`inputmethod/ior.conf` 的占位
   `Icon=fcitx-pinyin` 改为 `Icon=ior`，CMake 安装到
@@ -158,11 +177,12 @@
   `core.ior`；`new_engine_with` 保留测试注入 Config+Dictionary。
 
 ### 验证
-- `cargo test --workspace`：**282/282** 通过；`clippy -D warnings`、
+- `cargo test --workspace`：**292/292** 通过；`clippy -D warnings`、
   `cargo fmt --check`、行数门禁全绿；fcitx5 C++ cmake 构建通过，`nm -D` 18 符号。
 - **真机回归**（Ubuntu noble/X11/fcitx5 5.1.7/GTK，xdotool 合成键序）：
-  全拼 `tianqi/jintian/nihao/zhongguo` 首选 天氣/今天/你好/中國；自然码
-  `jntm/vsgo/nihk` 首选 今天/中國/你好。记录见 `docs/M2-VERIFY.md`。
+  全拼 `tianqi/jintian/nihao/zhongguo` 首选 天气/今天/你好/中国；自然码
+  `jntm/vsgo/nihk` 首选 今天/中国/你好；不完整 `nih` → 你会、`n` → 你；
+  整句 `jintiantianqibucuo` → 今天天气不错。记录见 `docs/M2-VERIFY.md`。
   M1 批次的翻页/标点/Shift/userdb 四路落盘见 `docs/M1-VERIFY.md`。
 ## [0.1.0-m0] - 2026-10-31
 

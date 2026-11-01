@@ -550,6 +550,26 @@ mod tests {
     }
 
     #[test]
+    fn partial_input_exposes_prefix_candidates() {
+        // SAFETY: each engine stays live until its own free call below.
+        let engine = test_engine();
+        type_keys(engine, &[0x6E]); // n
+        assert_eq!(text(unsafe { ior_engine_preedit(engine) }), "n");
+        assert!(
+            unsafe { ior_engine_candidate_count(engine) } >= 1,
+            "bare initial should have candidates"
+        );
+        unsafe { ior_engine_free(engine) };
+
+        let engine = test_engine();
+        type_keys(engine, &[0x6E, 0x69, 0x68]); // n i h
+        assert_eq!(text(unsafe { ior_engine_preedit(engine) }), "nih");
+        assert!(unsafe { ior_engine_candidate_count(engine) } >= 1);
+        assert_eq!(candidate_text(engine, 0), "你好");
+        unsafe { ior_engine_free(engine) };
+    }
+
+    #[test]
     fn digit_select_commits() {
         // SAFETY: engine stays live until ior_engine_free below.
         let engine = test_engine();

@@ -7,16 +7,18 @@
 ## 1. 现状定位（2026-11-01 复审）
 
 M0 词级链路之后，M1/M2a 已完成，M2b/M3/M3.5/P5-lite 主体落地；`cargo test --workspace`
-**282/282** 通过（复审工作树），clippy/fmt/行数门禁全绿。
+**292/292** 通过（复审工作树），clippy/fmt/行数门禁全绿。
 
 **已进入用户路径：**
 
-- 词库：luna_pinyin 70,055 条 + `essay.txt` preset 编码后 **429,870 词条 /
-  293,168 keys / 9.4 MB**；`.ior` v2 加载 + 多词典叠加 + 93 词内置兜底；
+- 词库：luna_pinyin 70,055 条 + `essay.txt` preset 编码后经 OpenCC t2s
+  **427,661 简体词条 / 293,168 keys / 9.4 MB**；`.ior` v2 加载 + 多词典
+  叠加 + 93 词内置兜底；
 - 拼式：403 音节、查询侧 8 组模糊音、简拼、自然碼/小鶴/微軟三套真实双拼
   （`config.toml` 的 `engine.double_pinyin` 选择）；
 - 解码：装有 `core.gram` 时 ≥3 音节走 beam 整句；简拼/短输入/无模型回退
-  三步拼装（整词 → 用户词 → 逐音节拼字）；
+  三步拼装（整词 → 用户词 → 逐音节拼字），常规步骤无候选时再做不完整
+  拼写前缀回退（`nih` → 你会/你好）；
 - 用户词典：快照 + append-log + 压实 + 30 天半衰期衰减 + TSV 导入导出，
   addon 四路学习均落盘；
 - 交互：core 分页 / PageUp/Down / 候选索引直选、Shift 三态、中文标点、
@@ -34,7 +36,7 @@ M0 词级链路之后，M1/M2a 已完成，M2b/M3/M3.5/P5-lite 主体落地；`c
 
 **仍缺的结构性能力：**
 
-1. **数据质量**：42.99 万条解决了规模，但排序仍以词频为主；LM 由词表内字符
+1. **数据质量**：42.77 万条解决了规模，但排序仍以词频为主；LM 由词表内字符
    n-gram 合成，并非真实语料训练，也没有长句正确率基线；
 2. **拼式深度**：声调输入、spelling algebra、custom 双拼的宿主装表，
    以及双拼方案的运行时热切换；
@@ -42,18 +44,19 @@ M0 词级链路之后，M1/M2a 已完成，M2b/M3/M3.5/P5-lite 主体落地；`c
 4. **交互补齐**：Enter 行为可配、以词定字、符号面板、v 模式、日期/中文数字、
    联想；
 5. **用户词典自动化**：整句回填/自动造词待实现；
-6. **全半角与简繁**：`ascii_punct`、full shape、OpenCC 简繁转换。
+6. **全半角与运行时简繁**：`ascii_punct`、full shape、运行时简繁切换；
+   编译期简体（OpenCC t2s）已落地。
 
 ## 2. 差距对照表
 
 | # | Rime 能力域 | Rime 实现 | ior 现状 | 差距等级 |
 |---|-------------|-----------|----------|----------|
-| 1 | 词库规模与加载 | `dict.yaml` → `table.bin`（Trie 索引，10 万~百万级） | luna + essay 42.99 万条 / 9.4 MB 已加载；排序仍以词频为主，无语料 LM | 🟡 中 |
+| 1 | 词库规模与加载 | `dict.yaml` → `table.bin`（Trie 索引，10 万~百万级） | luna + essay 编译期简体化后 42.77 万条 / 9.4 MB；排序仍以词频为主，无语料 LM | 🟡 中 |
 | 2 | 整句解码 | poet beam + 八股文 n-gram（gram） | trigram + beam + `Session`/addon 加载链路已通；无语料模型、无准确率基线 | 🟡 大 |
 | 3 | 拼式代数 | spelling algebra（prism），双拼/简拼/模糊音全部运行时数据化 | 模糊音/简拼/三套双拼已落地；无声调、无 spelling algebra，custom 仍需宿主装表 | 🟡 中 |
 | 4 | 配置/方案体系 | YAML + schema + custom patch + 部署/重编译 | `ior-config` TOML/schema/patch 已接线启动；switches/punct 未生效、无热重载/UI | 🟡 中 |
 | 5 | 用户词典 | LevelDB userdb：持久化、词频自适应、自动造词（句子回填）、云 sync | 快照/日志/衰减/压实/TSV 已落地；自动造词待实现 | 🟢 小 |
-| 6 | 中英/全半角/标点/简繁 | switches + punct 翻译器 + OpenCC | 中文标点 + 引号配对已落地；全半角、ascii_punct、简繁缺 | 🟡 中 |
+| 6 | 中英/全半角/标点/简繁 | switches + punct 翻译器 + OpenCC | 中文标点 + 引号配对、编译期简体（OpenCC t2s）已落地；全半角、ascii_punct、运行时简繁切换缺 | 🟡 中 |
 | 7 | 候选交互 | 翻页键可配、以词定字、长词优先、逐键提示、Enter 上屏原码、光标移动 | 分页/翻页/索引直选已落地；Enter 可配、以词定字、光标/长词优先/逐键提示缺 | 🟡 中 |
 | 8 | 宿主集成 | per-IC 状态、状态区、per-app、配置 UI、quickphrase | 单引擎实例共享所有 IC（M0 已知串扰风险）、无状态区、Configurable=False | 🟡 中 |
 | 9 | 特殊输入 | 符号面板 /fh、日期时间、中文数字、u 反查、emoji | 全部缺失（M4 计划中） | 🟢 小 |
@@ -80,12 +83,15 @@ P6=M4+/M5。
 - ✅ engine-core：`Dictionary::from_ior_bytes` + **多词典叠加**
   （base + 领域 + 用户）。
 - ✅ 数据：rime `luna_pinyin`（70,055 条）+ `essay.txt` preset（442,685 短语）
-  编译为 **429,870 词条 / 293,168 keys / 9.4 MB**；来源与 LGPL-3.0 保留在
-  文件头。
+  编译并做 OpenCC t2s 后为 **427,661 词条 / 293,168 keys / 9.4 MB**；来源与
+  LGPL-3.0 保留在文件头，转换表为 Apache-2.0（见 `data/README.md`）。
+- ✅ `compile --simplify`：最长短语优先 → 单字表回退，取每行首值，等价于
+  OpenCC `t2s.json`；安装脚本默认启用。简化后同一 `(key, hanzi)` 合并，
+  词条数由 429,870 降至 427,661。
 - ✅ dict-tools：compile 自动识别 ior TSV / rime `dict.yaml`，
   validate/inspect/export/merge/train/lminspect 齐备；bench 实测 10 万词编译
   125 ms、加载中位 26.7 ms。
-- ✅ 验收：`tianqi→天氣`、`jintian→今天`、`nihao→你好`、`zhongguo→中國`
+- ✅ 验收：`tianqi→天气`、`jintian→今天`、`nihao→你好`、`zhongguo→中国`
   真机回归通过；`ior-bench` 已接入 CI。
 
 ### P1（=M2a）拼式管线数据化
@@ -98,6 +104,9 @@ P6=M4+/M5。
   `dict` 内建首字母索引（`lookup_initials`）+ `spelling::initials_prefix`
   判定，纯声母串（≥2 字母、无分隔符）在常规候选之后追加（每 key 1 条，
   freq 降序）。
+- **不完整输入前缀回退**：✅ 已落地。`prefix_index` 按去 `'` 平铺拼写排序，
+  常规解码无候选时二分查找前缀，每 key 取最高频词条；仅作为兜底，完整
+  输入顺序不变（`n` → 你、`nih` → 你会/你好）。
 - **双拼**映射表数据化（自然码/小鹤/微软）。✅ 框架已落地：
   `double_pinyin.rs`（`DpTable` + `parse_tsv` + `to_full`，产出音节逐一
   过 `syllable::is_syllable` 校验）+ `config::DoublePinyin` 开关 +
@@ -160,7 +169,8 @@ P6=M4+/M5。
 
 ### P6（=M4+/M5）差异化与按需
 
-- **简繁转换**：opencc 数据子集（Apache 许可，表驱动）。
+- **简繁转换**：✅ 编译期 OpenCC t2s（vendored 数据，Apache-2.0，表驱动，
+  运行时零依赖）；⏳ 运行时简繁切换。
 - 评测体系进 **CI 门禁**。
 - 反查 / table 码表**明确降级为 backlog**（ior 定位对标搜狗本地拼音，
   非全方案引擎）。
@@ -202,7 +212,7 @@ P0 词库/加载 ──► P1 拼式管线 ──► P2 整句+LM ──► (P3 
 
 | 项 | 状态（2026-11-01） |
 |----|------|
-| P0：`.ior` v2 加载 / compile / validate / bench | ✅ 已落地；luna 真实词库 + essay preset 编码后 429,870 词条 / 9.4 MB（`docs/M2-VERIFY.md`） |
+| P0：`.ior` v2 加载 / compile / validate / bench | ✅ 已落地；luna 真实词库 + essay preset 经 OpenCC t2s 后 427,661 词条 / 9.4 MB（`docs/M2-VERIFY.md`） |
 | P1：查询侧模糊音 / 简拼 / 三套内置双拼 | ✅ 已落地；自然碼/小鶴/微軟真实键位表 + `flypy` 配置别名 |
 | P2：`.gram` n-gram + beam search | 🟡 算法/格式/bench/互锁 + 安装/加载链路 + 词表级模型已落地；真实语料模型与准确率基线待做 |
 | P3：userdb 持久化（快照/日志/压实/衰减/TSV 备份） | ✅ 已落地并真机实测（四路落盘 + 跨重启）；整句自动造词待实现 |
@@ -225,4 +235,5 @@ P0 词库/加载 ──► P1 拼式管线 ──► P2 整句+LM ──► (P3 
   switches/punct/热重载不闭环，配置 crate 的价值只兑现了一半。
 - **判断**：词级 + 整句已达“可用”；语料模型/评测、配置闭环、per-IC 是
   “好用”的三道门槛。
-- **暂缓**：OpenCC 简繁、符号面板、码表方案——先走完三道门槛，避免摊薄。
+- **暂缓**：运行时简繁切换、符号面板、码表方案——先走完三道门槛，避免摊薄；
+  编译期简体已随本轮落地。
