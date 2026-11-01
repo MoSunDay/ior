@@ -76,12 +76,16 @@ scripts/download_models.sh
 | 阶段 | 内容 |
 |------|------|
 | **M0 ✅ 完成** | 骨架 + 薄壳 + 词级转换打通，GTK/Qt/XIM 三前端实测通过（2026-10-31，见 `docs/M0-FRONTEND-TEST.md`） |
-| M1 | 核心词库 10 万级（core.tsv → engine-core Dictionary） |
-| M2 | 整句 trigram + beam 解码、双拼、模糊音 |
-| M3 | 用户自学习（词频调序、造词、云备份接口） |
-| M4 | U/V 模式、标点配对、皮肤/配置 UI |
-| M5 | 评测体系（转换准确率、延迟、内存基准） |
+| M1 (=P0) | 词库规模：`.ior` v2 二进制 + engine-core 加载/多词典叠加 + 10 万级数据导入 |
+| M2a (=P1) | 拼式管线数据化：运行时模糊音、简拼、双拼（自然码/小鹤/微软） |
+| M2b (=P2) | 整句 trigram + beam 解码、`.gram` 语言模型 |
+| M3 (=P3) | 用户词典持久化（append-log+snapshot、时间衰减）、自动造词、TSV 备份接口 |
+| M3.5 (=P4) | 配置/方案体系：极简 TOML、switches、热部署、user patch |
+| M4 (=P5) | 分页/标点/Shift 中英/以词定字/符号面板/per-IC/状态区/联想 |
+| M4+/M5 (=P6) | 简繁、评测体系 CI 门禁；反查与码表方案明确降级 backlog |
 | 二期 V1~V4 | 语音：V1 按键说话+VAD → V2 流式 ASR → V3 批量精解码 → V4 模型管理与下载 |
+
+完整差距对照与依赖图见 `docs/ROADMAP-RIME-PARITY.md`。
 
 ## 数据版权注意
 
