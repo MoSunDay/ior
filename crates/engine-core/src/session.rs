@@ -7,13 +7,15 @@
 //! `s.raw` and `s.config`, mutates only through `&mut Session`, and reports
 //! what the frontend should do with the key.
 
-use crate::config::EngineConfig;
+use crate::config::{EngineConfig, ShiftAction};
 use crate::decoder::{self, Candidate};
 use crate::dict::Dictionary;
+use crate::punct;
 use crate::segmenter::best_segmentation;
 use crate::user_dict::{self, UserDict};
 
-/// Flat candidate-list length used for digit selection and space commit.
+/// Flat candidate-list length used for digit selection, space commit and
+/// paging math (still capped by `config.max_candidates` in `candidates`).
 const FLAT_CANDIDATE_LIMIT: usize = 10;
 
 /// Everything an input method needs per client.
@@ -27,6 +29,17 @@ pub struct Session {
     pub dict: Dictionary,
     /// Learned entries for this user.
     pub user_dict: UserDict,
+    /// False = Chinese mode, true = English (ASCII) mode. Letters are
+    /// forwarded untouched while true; Shift toggles it
+    /// (see [`process_shift`]).
+    pub ascii_mode: bool,
+    /// When true, Chinese mode still emits raw ASCII punctuation
+    /// (per-session override of `config.chinese_punct`).
+    pub ascii_punct: bool,
+    /// Current candidate page index into the flat candidate list.
+    pub page: usize,
+    /// Paired-quote parity for Chinese punctuation.
+    pub punct: punct::PunctState,
 }
 
 /// What the frontend should do with a key event.
@@ -56,22 +69,30 @@ pub fn new_session_with(config: EngineConfig, dict: Dictionary) -> Session {
         config,
         dict,
         user_dict: user_dict::new(),
+        ascii_mode: false,
+        ascii_punct: false,
+        page: 0,
+        punct: punct::new(),
     }
 }
 
 /// Feeds one key into the session and reports the outcome.
 pub fn process_key(s: &mut Session, ch: char) -> ProcessResult {
     match ch {
+        'a'..='z' if s.ascii_mode => ProcessResult::Forwarded,
         'a'..='z' => {
             s.raw.push(ch);
+            s.page = 0;
             ProcessResult::Editing
         }
         'A'..='Z' => ProcessResult::Forwarded,
         '\'' => {
             if s.raw.is_empty() {
-                ProcessResult::Forwarded
+                // No composition: the quote is punctuation, not a separator.
+                handle_punct(s, ch)
             } else {
                 s.raw.push(ch);
+                s.page = 0;
                 ProcessResult::Editing
             }
         }
@@ -82,6 +103,7 @@ pub fn process_key(s: &mut Session, ch: char) -> ProcessResult {
                 ProcessResult::Forwarded
             } else {
                 s.raw.pop();
+                s.page = 0;
                 ProcessResult::Editing
             }
         }
@@ -89,30 +111,27 @@ pub fn process_key(s: &mut Session, ch: char) -> ProcessResult {
             if s.raw.is_empty() {
                 ProcessResult::Forwarded
             } else {
-                s.raw.clear();
+                reset_composition(s);
                 ProcessResult::Editing
             }
         }
-        _ => ProcessResult::Forwarded,
+        _ => handle_punct(s, ch),
     }
 }
 
-/// Digit selection: `1`..`9` pick index 0..8, `0` picks index 9. A digit is
-/// forwarded only when there is no preedit; a missing index swallows the key.
+/// Digit selection: `1`..`9` pick page-local index 0..8, `0` picks 9, both
+/// offset by the current page. A digit is forwarded only when there is no
+/// preedit; a missing index swallows the key.
 fn handle_digit(s: &mut Session, ch: char) -> ProcessResult {
     if s.raw.is_empty() {
         return ProcessResult::Forwarded;
     }
-    let idx = match ch.to_digit(10) {
+    let offset = match ch.to_digit(10) {
         Some(0) => 9,
         Some(d) => d as usize - 1,
         None => return ProcessResult::Editing,
     };
-    let cands = candidates(s, FLAT_CANDIDATE_LIMIT);
-    match cands.get(idx) {
-        Some(cand) => commit_candidate(s, cand),
-        None => ProcessResult::Editing,
-    }
+    select_flat(s, s.page * page_size(s) + offset)
 }
 
 /// Space/enter: commit the top candidate, or pass the raw letters through
@@ -126,14 +145,14 @@ fn handle_commit_or_passthrough(s: &mut Session) -> ProcessResult {
         Some(cand) => commit_candidate(s, cand),
         None => {
             let text = s.raw.replace('\'', "");
-            s.raw.clear();
+            reset_composition(s);
             ProcessResult::Committed(text)
         }
     }
 }
 
 /// Commits `cand`: learn it under the normalized key of the current raw
-/// input (when learning is on), clear the buffer, and report the text.
+/// input (when learning is on), clear the composition, and report the text.
 fn commit_candidate(s: &mut Session, cand: &Candidate) -> ProcessResult {
     let key = normalized_key(&s.raw);
     if s.config.user_learning {
@@ -141,8 +160,147 @@ fn commit_candidate(s: &mut Session, cand: &Candidate) -> ProcessResult {
             user_dict::learn(&mut s.user_dict, &k, &cand.text);
         }
     }
-    s.raw.clear();
+    reset_composition(s);
     ProcessResult::Committed(cand.text.clone())
+}
+
+/// Drops the composition: raw buffer and page index. Shared by every path
+/// that clears what is being typed (commit, escape, mode switch).
+fn reset_composition(s: &mut Session) {
+    s.raw.clear();
+    s.page = 0;
+}
+
+/// Effective page size, never zero (a zero `config.page_size` degrades to
+/// one candidate per page rather than dividing by zero).
+fn page_size(s: &Session) -> usize {
+    s.config.page_size.max(1)
+}
+
+/// Number of candidate pages for the current preedit (0 when there are no
+/// candidates): flat candidate count rounded up over `config.page_size`.
+pub fn page_count(s: &Session) -> usize {
+    let n = candidates(s, FLAT_CANDIDATE_LIMIT).len();
+    if n == 0 {
+        0
+    } else {
+        n.div_ceil(page_size(s))
+    }
+}
+
+/// The candidates of page `s.page`, sliced out of the flat list.
+pub fn current_page(s: &Session) -> Vec<Candidate> {
+    let flat = candidates(s, FLAT_CANDIDATE_LIMIT);
+    let start = (s.page * page_size(s)).min(flat.len());
+    let end = (start + page_size(s)).min(flat.len());
+    flat[start..end].to_vec()
+}
+
+/// Advances to the next page, wrapping from the last page back to the
+/// first. Returns whether the page index changed.
+pub fn next_page(s: &mut Session) -> bool {
+    let count = page_count(s);
+    if count <= 1 {
+        return false;
+    }
+    let cur = s.page.min(count - 1);
+    s.page = (cur + 1) % count;
+    s.page != cur
+}
+
+/// Goes back one page, wrapping from the first page to the last. Returns
+/// whether the page index changed.
+pub fn prev_page(s: &mut Session) -> bool {
+    let count = page_count(s);
+    if count <= 1 {
+        return false;
+    }
+    let cur = s.page.min(count - 1);
+    s.page = if cur == 0 { count - 1 } else { cur - 1 };
+    s.page != cur
+}
+
+/// Commits the flat-list candidate at `flat_index` (learning and page reset
+/// included, exactly like the digit/space commit paths). An out-of-range
+/// index swallows the key and keeps the composition.
+pub fn select_flat(s: &mut Session, flat_index: usize) -> ProcessResult {
+    let cands = candidates(s, FLAT_CANDIDATE_LIMIT);
+    match cands.get(flat_index) {
+        Some(cand) => commit_candidate(s, cand),
+        None => ProcessResult::Editing,
+    }
+}
+
+/// Toggles Chinese/English mode. Switching to English applies
+/// `config.shift_action` to a non-empty preedit (commit raw / commit the
+/// best candidate, learning included / clear). Switching back to Chinese
+/// just reports `Editing`. Either way the composition is cleared.
+pub fn process_shift(s: &mut Session) -> ProcessResult {
+    s.ascii_mode = !s.ascii_mode;
+    let result = if s.ascii_mode && !s.raw.is_empty() {
+        match s.config.shift_action {
+            ShiftAction::CommitRaw => {
+                let text = s.raw.clone();
+                reset_composition(s);
+                ProcessResult::Committed(text)
+            }
+            ShiftAction::CommitBest => {
+                let cands = candidates(s, FLAT_CANDIDATE_LIMIT);
+                match cands.first() {
+                    Some(cand) => commit_candidate(s, cand),
+                    None => {
+                        let text = s.raw.clone();
+                        reset_composition(s);
+                        ProcessResult::Committed(text)
+                    }
+                }
+            }
+            ShiftAction::Clear => {
+                reset_composition(s);
+                ProcessResult::Editing
+            }
+        }
+    } else {
+        // Back to Chinese, or English with nothing pending: plain editing.
+        ProcessResult::Editing
+    };
+    reset_composition(s);
+    result
+}
+
+/// Flips the per-session "ASCII punctuation even in Chinese mode" flag.
+pub fn toggle_ascii_punct(s: &mut Session) {
+    s.ascii_punct = !s.ascii_punct;
+}
+
+/// Punctuation key: in Chinese mode with `config.chinese_punct` on (and the
+/// per-session `ascii_punct` override off) the key commits its Chinese
+/// counterpart; with a pending composition the best candidate is committed
+/// first (same learning/reset as selection). Everything else passes
+/// through, which the frontend reports as a forward.
+fn handle_punct(s: &mut Session, ch: char) -> ProcessResult {
+    let chinese = !s.ascii_mode && s.config.chinese_punct && !s.ascii_punct;
+    match punct::map(&mut s.punct, ch, chinese) {
+        punct::PunctOut::Text(t) => {
+            if s.raw.is_empty() {
+                return ProcessResult::Committed(t);
+            }
+            let cands = candidates(s, FLAT_CANDIDATE_LIMIT);
+            match cands.first() {
+                Some(cand) => {
+                    let mut text = cand.text.clone();
+                    commit_candidate(s, cand);
+                    text.push_str(&t);
+                    ProcessResult::Committed(text)
+                }
+                None => {
+                    reset_composition(s);
+                    ProcessResult::Committed(t)
+                }
+            }
+        }
+        punct::PunctOut::Passthrough => ProcessResult::Forwarded,
+    }
 }
 
 /// Up to `min(limit, config.max_candidates)` candidates for the preedit.
@@ -170,9 +328,10 @@ pub fn preedit(s: &Session) -> String {
     parts.join("'")
 }
 
-/// Clears the preedit buffer (keeps dictionaries and learning data).
+/// Clears the preedit buffer and page (keeps dictionaries, learning data
+/// and the mode/punctuation flags).
 pub fn reset(s: &mut Session) {
-    s.raw.clear();
+    reset_composition(s);
 }
 
 /// Best-segmentation key of `raw`: each `'`-separated run segmented and all

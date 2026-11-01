@@ -19,8 +19,19 @@
 //!   thread, and the bridge does no locking. Concurrent calls on one engine
 //!   are undefined behavior.
 //! - Every entry point tolerates a null engine (process_key returns -1,
-//!   preedit/take_commit return "", candidate_count returns 0, candidate
-//!   returns null).
+//!   preedit/take_commit/select return "", candidate_count/page_info/
+//!   ascii_mode return 0, page_next/page_prev return 0, candidate returns
+//!   null, userdb_save/load/decay return -1).
+//! - Candidate symbols expose the **current page** only; paging is cyclic
+//!   (`page_next`/`page_prev`, snapshot via `page_info`), clicks commit via
+//!   `select(page_local_index)`, and the Chinese/English mode pair is
+//!   `ascii_mode`/`set_ascii_mode` (ABI v2).
+//! - The userdb pair `userdb_save`/`userdb_load` (plus `userdb_decay`)
+//!   persists the learned dictionary: saving writes a compacted snapshot,
+//!   loading sniffs snapshot-vs-log format and only merges into the user
+//!   dictionary (preedit/commit/mode untouched; a missing file is status 1,
+//!   not an error). File I/O lives in [`engine_state`] only — engine-core
+//!   just produces and consumes bytes.
 //!
 //! Stability rules: the `ior_*` C ABI is versioned with the addon version;
 //! additive changes only. Anything not `#[no_mangle] extern "C"` here is

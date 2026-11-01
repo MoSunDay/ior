@@ -9,8 +9,9 @@ use std::ffi::{c_char, CStr};
 
 use ior_engine::engine_state::IorEngine;
 use ior_engine::ffi::{
-    ior_engine_candidate, ior_engine_candidate_count, ior_engine_free, ior_engine_new,
-    ior_engine_preedit, ior_engine_process_key, ior_engine_take_commit,
+    ior_engine_ascii_mode, ior_engine_candidate, ior_engine_candidate_count, ior_engine_free,
+    ior_engine_new, ior_engine_page_info, ior_engine_page_next, ior_engine_preedit,
+    ior_engine_process_key, ior_engine_select, ior_engine_take_commit,
 };
 
 /// Reads an engine-owned string. Per the FFI contract the pointer is only
@@ -74,6 +75,44 @@ fn main() {
     }
     println!("preedit: {}", preedit(engine));
     println!("candidates: {}", candidates(engine).join(" "));
+
+    // ABI v2: page through the candidates (keysyms Page_Down/Page_Up also
+    // work through ior_engine_process_key).
+    // SAFETY: engine is live for the whole demo.
+    unsafe {
+        println!(
+            "page_info: {} of {}",
+            ior_engine_page_info(engine) >> 16,
+            ior_engine_page_info(engine) & 0xFFFF
+        );
+        ior_engine_page_next(engine);
+    }
+    println!("candidates: {}", candidates(engine).join(" "));
+    // Candidate click: commit by page-local index.
+    // SAFETY: engine is live; the pointer is read before the next ior_* call.
+    println!(
+        "select(0): {}",
+        text(unsafe { ior_engine_select(engine, 0) })
+    );
+
+    // ABI v2: Shift switches to English mode; the pending preedit (none
+    // here) is handled per shift_action, letters are then forwarded.
+    // SAFETY: engine is live for the whole demo.
+    unsafe {
+        assert_eq!(ior_engine_process_key(engine, 0xFFE1), 1); // Shift_L
+        assert_eq!(ior_engine_ascii_mode(engine), 1);
+        assert_eq!(ior_engine_process_key(engine, 0x6E), 0); // 'n' forwarded
+    }
+
+    // Back to Chinese and a punctuation example: with an empty preedit the
+    // comma commits the Chinese counterpart directly.
+    // SAFETY: engine is live for the whole demo.
+    unsafe {
+        assert_eq!(ior_engine_process_key(engine, 0xFFE2), 1); // Shift_R
+        assert_eq!(ior_engine_ascii_mode(engine), 0);
+    }
+    assert_eq!(key(engine, 0x2C), 2, "',' should commit '，'");
+    println!("punct: {}", take_commit(engine));
 
     // SAFETY: engine is released exactly once at the end of the demo.
     unsafe { ior_engine_free(engine) };

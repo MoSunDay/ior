@@ -23,6 +23,21 @@ pub struct FuzzyConfig {
     pub in_ing: bool,
 }
 
+/// What Shift does to the un-committed preedit when switching from Chinese
+/// to English mode (see `session::process_shift`). Three configurable
+/// states: commit the raw buffer verbatim, commit the best candidate (raw
+/// text when nothing decodes), or just drop the composition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ShiftAction {
+    /// Commit the raw (typed) buffer as-is, apostrophes included.
+    #[default]
+    CommitRaw,
+    /// Commit the top candidate (learning applies); raw text as fallback.
+    CommitBest,
+    /// Drop the composition without committing anything.
+    Clear,
+}
+
 /// Top-level engine settings.
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
@@ -34,6 +49,13 @@ pub struct EngineConfig {
     pub page_size: usize,
     /// Hard cap on how many candidates are produced per request.
     pub max_candidates: usize,
+    /// Chinese punctuation mapping: when true (and the session is in
+    /// Chinese mode with `ascii_punct` off), printable ASCII punctuation
+    /// commits its Chinese counterpart instead of passing through.
+    pub chinese_punct: bool,
+    /// How Shift leaving Chinese mode handles the un-committed preedit:
+    /// commit it raw, commit the best candidate, or clear it.
+    pub shift_action: ShiftAction,
 }
 
 impl Default for EngineConfig {
@@ -43,6 +65,8 @@ impl Default for EngineConfig {
             user_learning: true,
             page_size: 5,
             max_candidates: 10,
+            chinese_punct: true,
+            shift_action: ShiftAction::CommitRaw,
         }
     }
 }

@@ -44,7 +44,48 @@ fcitx5 --replace &             # 重载 addon（或注销重登）
 fcitx5-remote -s ior           # 切到 ior（也可用 fcitx5-configtool）
 # GTK3 / Qt5 / XIM 三前端任意应用中输入：
 #   nihao + Space → 你好    xian + 2 → 选次候选    vk + Space → 原样透传
+#   Shift 单击（无修饰组合）→ 中/英切换    , → ，（中文标点）
+#   Page_Down / Page_Up → 候选翻页（编码激活时）
 ```
+
+## C ABI（v2）
+
+`ior_engine_abi_version()` 返回 **2**；共 **18 个** `ior_` 符号
+（声明见 `ioraddon.h`，Rust 侧源 `crates/fcitx5-addon/src/ffi.rs`）。
+v2 相对 v1 的变化：
+
+- **候选只暴露当前页**：`ior_engine_candidate_count` / `candidate`
+  上限从平铺 10 改为 `page_size`（默认 5）内的当前页；翻页由
+  `ior_engine_page_next` / `page_prev`（循环，返回 1=页变化、0=无
+  操作）驱动，`ior_engine_page_info` 返回 `(当前页+1)<<16 | 总页数`
+  （无候选=0）。
+- **候选点击按页内索引提交**：`ior_engine_select(engine,
+  page_local_index)` 直接提交当前页第 N 个候选（返回提交文本，无效
+  索引返回 `""`），学习/清码与数字选词一致。替代 v1 的「合成数字
+  键」方案，修复翻页后点击错选。
+- **中英切换**：`ior_engine_ascii_mode`（0 中文 / 1 英文）与
+  `ior_engine_set_ascii_mode`（变化时走 core Shift 语义处理未上屏
+  编码：CommitRaw/CommitBest/Clear 可配；返回新状态）。
+  `ior_engine_process_key` 的 `Shift_L`/`Shift_R` keysym 也会切换
+  （**按下即触发**）；本薄壳走「释放时切换 + 修饰检测」路径，不把
+  Shift 透传给 `process_key` —— 两种机制**择一使用**，同时启用会
+  切换两次。
+- **中文标点**：中文模式下可打印 ASCII 标点经引擎映射后上屏
+  （`，。；：？！（）【】《》……——` 等，引号 `"`/`'` 交替开闭）；
+  编码未上屏时先提交首选候选再接标点；`chinese_punct` 关闭或会话
+  `ascii_punct` 打开则原样透传。
+- **用户词典持久化**（v2 内纯追加，ABI 仍为 2）：
+  `ior_engine_userdb_save / load / decay` 三符号。薄壳把学习词典存到
+  `$XDG_DATA_HOME/fcitx5/ior/userdb.tsv`（未设 `XDG_DATA_HOME` 则
+  `$HOME/.local/share/fcitx5/ior/userdb.tsv`，目录首次访问即建）；
+  引擎初始化时 `load`（返回 1=文件不存在，是正常冷启动，非错误；
+  引擎自动识别快照/append-only log 格式并**叠加**进当前词典），成功后
+  按文件 mtime 与当前时间差调 `decay(delta, 30 天秒数)` 做时间衰减
+  （半衰期 **30 天**、整次减半，mtime 不可得则跳过）；每次上屏
+  （空格/数字提交、候选点选、Shift 切换附带提交）后即 `save`——保存
+  就是写快照（= 压实），失败静默，持久化绝不阻断输入。save=0/2(IO)/
+  -1(null)；load=0/1(不存在)/2(IO)/3(格式)/-1；decay=0/-1
+  （`half_life=0` 合法=不变）。
 
 无头/无 X 环境用示例自测引擎链路：
 `cargo run -p fcitx5-ior --example m0_demo`。
