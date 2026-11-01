@@ -17,10 +17,12 @@
 pub mod cli;
 pub mod format;
 pub mod gram;
+pub mod preset;
 pub mod source;
 pub mod varint;
 
 pub use cli::{parse_args, run, Command, USAGE};
 pub use format::{deserialize, normalize, parse_tsv, serialize, to_tsv, Entry, MAGIC, VERSION};
 pub use gram::{bigrams, parse_gram, total_weight, train_counts, trigrams, unigrams, GramCounts};
-pub use source::load_source;
+pub use preset::{PresetVocab, WEIGHT_SCALE};
+pub use source::{load_source, load_source_with_preset, rime_settings, RimeSettings};

@@ -415,3 +415,73 @@ fn validate_accepts_rime_sources_and_compile_agrees() {
     fs::remove_file(&input).ok();
     fs::remove_file(&output).ok();
 }
+
+#[test]
+fn compile_parses_vocabulary_flag_in_any_position() {
+    let args = arg_list(&[
+        "compile",
+        "--vocabulary",
+        "data/dicts/essay.txt",
+        "in.yaml",
+        "out.ior",
+    ]);
+    assert_eq!(
+        cli::parse_args(&args).unwrap(),
+        cli::Command::Compile {
+            input: "in.yaml".into(),
+            output: "out.ior".into(),
+            vocabulary: Some("data/dicts/essay.txt".into()),
+        }
+    );
+    let args = arg_list(&["compile", "in.yaml", "out.ior"]);
+    assert_eq!(
+        cli::parse_args(&args).unwrap(),
+        cli::Command::Compile {
+            input: "in.yaml".into(),
+            output: "out.ior".into(),
+            vocabulary: None,
+        }
+    );
+    let args = arg_list(&["compile", "in.yaml", "out.ior", "--vocabulary"]);
+    assert!(cli::parse_args(&args).unwrap_err().contains("needs a path"));
+}
+
+#[test]
+fn compile_loads_sibling_essay_for_preset_vocabulary() {
+    let input = temp_path("preset-dict.yaml");
+    let essay = temp_path("essay.txt");
+    let output = temp_path("preset-out.ior");
+    fs::write(
+        &input,
+        "# Rime dictionary\nuse_preset_vocabulary: true\n...\n\
+         \u{4eca}\tjin\t10\n\u{5929}\ttian\t10\n",
+    )
+    .expect("write preset dict");
+    fs::write(&essay, "# preset\n\u{4eca}\u{5929}\t500\n").expect("write essay");
+
+    let mut out = Vec::new();
+    let args = arg_list(&["compile", input.to_str().unwrap(), output.to_str().unwrap()]);
+    assert_eq!(cli::run(&args, &mut out), 0);
+    let report = String::from_utf8(out).unwrap();
+    assert!(report.contains("preset vocabulary"), "{report}");
+    assert!(report.contains("1 encoded entrie(s)"), "{report}");
+
+    let bytes = fs::read(&output).expect("read .ior");
+    let entries = format::deserialize(&bytes).expect("deserialize");
+    let phrase = entries
+        .iter()
+        .find(|entry| entry.hanzi == "\u{4eca}\u{5929}")
+        .expect("encoded 今天");
+    assert_eq!(phrase.pinyin, "jin'tian");
+    assert_eq!(phrase.freq, 50_000);
+    // Absolute weights are fixed-point scaled when a preset is active.
+    let jin = entries
+        .iter()
+        .find(|entry| entry.hanzi == "\u{4eca}")
+        .unwrap();
+    assert_eq!(jin.freq, 1_000);
+
+    fs::remove_file(&input).ok();
+    fs::remove_file(&essay).ok();
+    fs::remove_file(&output).ok();
+}

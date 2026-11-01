@@ -9,7 +9,8 @@
 data/
 ├── dicts/
 │   ├── sample-extra.tsv         # IT 领域示例词库（20 条，M0 冒烟测试用）
-│   └── luna_pinyin.dict.yaml    # rime 明月拼音原词库（P0 数据导入）
+│   ├── luna_pinyin.dict.yaml    # rime 明月拼音原词库（P0 数据导入）
+│   └── essay.txt                # rime preset vocabulary（短语权重）
 ├── double-pinyin/
 │   ├── rime/                    # 上游 schema 原文（含 algebra 键位规则）
 │   │   ├── natural.schema.yaml  # 自然碼
@@ -21,9 +22,11 @@ data/
 └── README.md                    # 本文件
 ```
 
-`data/dicts/core.ior`（luna 编译产物，约 730 KB）**不入库**，由
+`data/dicts/core.ior`（luna + essay 编译产物，约 9.4 MB / 293,168 keys /
+429,870 词条）**不入库**，由
 `cargo run -p dict-tools --release -- compile data/dicts/luna_pinyin.dict.yaml data/dicts/core.ior`
-生成；安装用 `scripts/install-core-dict.sh`。内置的
+生成（`compile` 会按 dict 头部的 `use_preset_vocabulary: true` 自动读取同目录
+`essay.txt`）；安装用 `scripts/install-core-dict.sh`。内置的
 `crates/engine-core/assets/core.tsv`（~90 条）仅作为测试/无数据时的兜底。
 
 ## 双拼键位表（P1 数据导入落地）
@@ -38,6 +41,23 @@ schema 的 `algebra` 规则**求值**得到，不靠记忆编造：脚本对
 - 上游：<https://github.com/rime/rime-double-pinyin>（GPL-3.0）。
   键位映射属于功能性事实数据，本仓库保留出处与许可证说明。
 - 重新生成：`python3 scripts/convert-rime-double-pinyin.py`（幂等）。
+
+## preset vocabulary（essay.txt）
+
+luna_pinyin 的 dict.yaml 只收录字词，常用多字短语依赖 Rime 部署期的
+preset vocabulary：`use_preset_vocabulary: true`（或显式 `vocabulary: essay`）
+时，`compile` 读取输入同级目录的 `essay.txt`，用 dict 中每个字的读音给短语
+编码。编码规则对齐 librime：
+
+- 只使用占该字总权重 ≥5% 的读音；
+- 最长匹配 DFS，每短语最多 32 个码组合、最长 32 字；
+- dict.yaml 中已存在的短语直接跳过（显式词条优先）；
+- 权重为 0 或低于 `min_phrase_weight` 的短语丢弃；
+- 启用 preset 后所有 rime 权重以 `WEIGHT_SCALE=100` 定点化；百分比行按
+  `essay_weight * pct / 100` 缩放。
+
+因此 `.ior` 里除了源 dict.yaml 的 70,055 条，还会多出约 37 万条 essay
+编码短语。`essay.txt` 正文来自 rime-essay master，保留 3 行来源/许可头。
 
 ## TSV 词库格式
 
@@ -155,6 +175,7 @@ engine-core、不内嵌 403 音节表，需人工比对）。
 | 文件 | 上游 | 规模 | 许可证 |
 |------|------|------|--------|
 | `dicts/luna_pinyin.dict.yaml` | rime-luna-pinyin | 70,055 词条（19,920 键） | LGPL-3.0 |
+| `dicts/essay.txt` | rime-essay | 442,685 短语（5,887,490 B） | LGPL-3.0 |
 | `double-pinyin/rime/*.schema.yaml` | rime-double-pinyin | 三套 schema | GPL-3.0 |
 ```
 

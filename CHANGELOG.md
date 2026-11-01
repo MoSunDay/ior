@@ -2,9 +2,9 @@
 
 本项目所有显著变更记录于此。格式参考 Keep a Changelog，版本遵循 SemVer。
 
-## [Unreleased] - Rime 对标第一批（P0 / P5-lite / P3）
+## [Unreleased] - Rime 对标第一批（P0–P4 + preset vocabulary）
 
-规划全貌见 `docs/ROADMAP-RIME-PARITY.md`；本批落地「若只能先做三件事」的全部三项。
+规划全貌见 `docs/ROADMAP-RIME-PARITY.md`；本批覆盖 P0 / P5-lite / P3 / P1 / P2 / P4，并补齐 Rime preset vocabulary 的部署语义。
 
 ### P0 = M1：词库二进制与加载
 - `.ior` 格式升级 **v2**：13 字节头 + key 索引区（varint 长度前缀、key 升序去重）+ 值区
@@ -44,15 +44,16 @@
   词典 key 保持全拼规范形，`from_tsv`/`from_ior_bytes` 系列去模糊参数。
 - 简拼：`Dictionary` 新增声母首字母 BTreeMap 索引 + `lookup_initials` 前缀查询，
   简拼候选排全拼之后、每 key 一条（`jt`→今天/`jin'tian`）。
-- 双拼框架：`DoublePinyin{Off,Custom}` + 可加载键位表（`double_pinyin.rs`
-  `parse_tsv`/`to_full`，逐音节 `is_syllable` 校验，失败回退全拼）。真实键位表
-  （自然码/小鹤/微软）因离线未编造，待网络恢复以数据导入。
+- 双拼：`DoublePinyin{Off,Natural,Xiaohe,Mspy,Custom}`；`double_pinyin::builtin`
+  用 `include_str!` 内置自然碼/小鶴/微軟三张真实表，`session::new_session_with`
+  构造时自动装表；`Custom` 仍可加载宿主表，失败回退全拼。
+- 配置：`ior-config` 同步五值枚举并接受 rime 别名 `flypy`（= 小鹤）。
 - addon `candidates` 薄封装保持原签名，宿主零改动。
 
 ### 数据导入（P0 收尾，网络恢复后落地）
 - 词库：导入 rime **luna_pinyin**（LGPL-3.0，出处与许可保留在文件头），
-  `compile` 产出 **70,055 词条 / 19,920 键**，`data/dicts/core.ior`（约 730 KB，
-  按仓库策略不入库，`scripts/install-core-dict.sh` 一键编译安装）。
+  `compile` 产出 **70,055 词条 / 19,920 键**，`data/dicts/core.ior`（P0 时约 730 KB，
+  接入 essay 后约 9.4 MB；按仓库策略不入库，`scripts/install-core-dict.sh` 一键编译安装）。
 - `dict-tools` 权重解析增强：rime 词库的百分比权重（如 `99.93%`）按万分比
   整数化；零权重（`0`/`0%`）按 rime 语义视为**剔除条目**而非权重 1。
 - 双拼真实键位表：新增 `scripts/convert-rime-double-pinyin.py`，对上游
@@ -62,6 +63,24 @@
   同键多零声母音节（自然碼 `e/ei/en/eng/er` 共享 e 键）、`;` 键
   （微軟 `ing=;`）；三张真实表对 404 音节逐码回环单测（仅 `lo`/`luo`
   方案固有碰撞，显式登记）。
+
+### P0 数据完整性：preset vocabulary（essay）部署语义
+- 背景：`luna_pinyin.dict.yaml` 只提供字词与生僻词，常用短语（天氣/今天/你好/中國）
+  在 Rime 部署期由 `essay.txt`（preset vocabulary）按字音编码，不写入 dict.yaml。
+  旧 `tianqi→蚕戚` 并非 `.ior` 读取 bug：`parse_ior`/`dump_ior` 与 dict-tools
+  `export` 逐字节一致；根因是缺少多字短语，旧候选由真实字频与缺词造成。
+- `dict-tools/src/preset.rs`：解析 `phrase<TAB>weight`；按 Rime 语义只保留单字
+  读音占比 ≥5% 的音，最长匹配 DFS、每短语最多 32 码组合、短语最长 32 字；
+  显式词库短语优先，零/低于 `min_phrase_weight` 的短语丢弃；权重以
+  `WEIGHT_SCALE=100` 定点化。
+- `source.rs`：解析 `use_preset_vocabulary` / `vocabulary` / `max_phrase_length` /
+  `min_phrase_weight`；启用 preset 时，缺失权重取 essay 权重，百分比按
+  `essay_weight * pct / 100`（定点后等价于 `essay_weight * pct`）。
+- CLI：`compile <in> <out.ior> [--vocabulary <path>]`；未显式指定时从输入同级
+  目录读取 `essay.txt`，与源词条合并后统一排序去重。
+- 数据：`data/dicts/essay.txt`（rime-essay，LGPL-3.0，442,685 短语），重编
+  `core.ior` 为 293,168 keys / 429,870 词条 / 9,444,158 字节，compile 约 3.5 s；
+  引擎确认 `tian'qi`→天氣、`jin'tian`→今天、`ni'hao`→你好、`zhong'guo`→中國。
 
 ### P2 = M2b：整句解码（`.gram` n-gram 语言模型 + beam search）
 - `.gram` v1 二进制语言模型格式（规范以 `engine-core/src/lm.rs` 模块文档为权威）：
@@ -102,7 +121,7 @@
   明确报错。
 - **配置 schema**（`model.rs`/`schema.rs`）：键名与默认值 1:1 对齐
   `engine-core/config.rs`（`engine.shift_action`=`commit|temp|none`、
-  `engine.double_pinyin`=`off|custom`（真实双拼方案枚举待 P1 数据导入）、
+  `engine.double_pinyin`=`off|natural|xiaohe|mspy|custom`（`flypy` 为小鹤别名）、
   `chinese_punct`/`user_learning`/`page_size`/`max_candidates`、
   `[engine.fuzzy]` 8 开关、`switches.<name>` 动态布尔表、`punct.<name>`
   字符映射占位）；错误带点分路径（如 `engine.shift_action: expected one
@@ -111,16 +130,17 @@
   String>` 深合并（表内按键合并、数组整体替换、类型不匹配报带路径错误）；
   `serialize_config/serialize_table` 输出确定性格式（标量在前、表头在后、
   2 空格缩进、插入序键序），parse→serialize→parse 语义等价。
-- 本批只做 crate 本身：未接线 FFI/addon，未改动任何现有 crate 运行时行为
-  （除 workspace members 一行）。
+- 已接线 addon：`new_engine` 读取 `$XDG_CONFIG_HOME/fcitx5/ior/config.toml`
+  （缺失/无效回落默认），并按用户数据目录 → 系统目录 → builtin 顺序加载
+  `core.ior`；`new_engine_with` 保留测试注入 Config+Dictionary。
 
 ### 验证
-- `cargo test --workspace`：**193/193** 通过（+35）；`clippy -D warnings`、
-  `cargo fmt --check` 全绿；fcitx5 C++ cmake 构建通过，`nm -D` 18 符号。
+- `cargo test --workspace`：**279/279** 通过；`clippy -D warnings`、
+  `cargo fmt --check`、行数门禁全绿；fcitx5 C++ cmake 构建通过，`nm -D` 18 符号。
 - **真机回归**（Ubuntu noble/X11/fcitx5 5.1.7/GTK，xdotool 合成键序）：
-  全拼/翻页+页内选词/中文标点/配对引号/Shift 中英/长词提交全通过；userdb
-  四路落盘与跨重启持久化实测确认。记录见 `docs/M1-VERIFY.md`（含截图）。
-  过程中评审发现并修复 saveUserdb 仅覆盖 1/3 提交路径的缺陷。
+  全拼 `tianqi/jintian/nihao/zhongguo` 首选 天氣/今天/你好/中國；自然码
+  `jntm/vsgo/nihk` 首选 今天/中國/你好。记录见 `docs/M2-VERIFY.md`。
+  M1 批次的翻页/标点/Shift/userdb 四路落盘见 `docs/M1-VERIFY.md`。
 ## [0.1.0-m0] - 2026-10-31
 
 M0 里程碑：引擎骨架 + fcitx5 薄壳 + 词级转换全链路打通，GTK/Qt/XIM 三前端

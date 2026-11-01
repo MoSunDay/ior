@@ -168,9 +168,11 @@ P0 词库/加载 ──► P1 拼式管线 ──► P2 整句+LM ──► (P3 
 
 | 项 | 状态（2026-11-01） |
 |----|------|
-| P0：`.ior` v2 加载 / compile / validate / bench | ✅ 已落地；10 万级真实词库导入待网络（见 P0 节） |
-| P1：查询侧模糊音 / 简拼 / 双拼框架 | ✅ 已落地；自然码/小鹤/微软真实键位表待数据导入 |
-| P3：userdb 持久化（快照/日志/压实/衰减/TSV 备份） | ✅ 已落地并真机实测（四路落盘 + 跨重启）；自动造词回填待 P2 |
+| P0：`.ior` v2 加载 / compile / validate / bench | ✅ 已落地；luna 真实词库 + essay preset 编码后 429,870 词条 / 9.4 MB（`docs/M2-VERIFY.md`） |
+| P1：查询侧模糊音 / 简拼 / 三套内置双拼 | ✅ 已落地；自然碼/小鶴/微軟真实键位表 + `flypy` 配置别名 |
+| P2：`.gram` n-gram + beam search | ✅ 算法/格式/bench/互锁已落地；宿主加载 `.gram` 的接线待后续 |
+| P3：userdb 持久化（快照/日志/压实/衰减/TSV 备份） | ✅ 已落地并真机实测（四路落盘 + 跨重启）；自动造词回填待 P2 接线 |
+| P4：`ior-config` TOML 子集 + schema + patch | ✅ 已落地并接线 addon 启动配置（`config.toml`） |
 | P5-lite：core 分页 + Shift + 标点 + FFI v2（18 符号） | ✅ 已落地并真机回归（`docs/M1-VERIFY.md`）；P5 其余项见规划 |
 | 横切：CI（fmt/clippy/test/行数门禁/bench 回归） | ✅ 已落地（`.github/workflows/ci.yml` + `scripts/check_line_limits.sh`） |
-| P2 / P4 及 P5 / P6 其余各项 | 规划（以本文档为准） |
+| P5 / P6 其余各项 | 规划（以本文档为准） |

@@ -16,6 +16,7 @@
 //! `normalize` call, not rejected, but they are counted and reported.
 
 use crate::format::{canonical_pinyin, Entry};
+use crate::preset::{PresetVocab, WEIGHT_SCALE};
 use std::collections::BTreeSet;
 
 /// Marker line that opens the table section of a rime dict.yaml.
@@ -56,15 +57,86 @@ pub struct Source {
     pub syllables: Vec<String>,
 }
 
+/// Rime dict.yaml header settings that affect compilation.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RimeSettings {
+    /// `use_preset_vocabulary: true` in the dict header.
+    pub use_preset_vocabulary: bool,
+    /// `vocabulary: essay` (defaults to `essay` when enabled).
+    pub vocabulary: Option<String>,
+    /// `max_phrase_length` (0 = Rime's hard cap of 32 characters).
+    pub max_phrase_length: usize,
+    /// `min_phrase_weight` (0 = keep every positive preset weight).
+    pub min_phrase_weight: f64,
+}
+
+impl RimeSettings {
+    /// Rime enables the preset vocabulary when the flag is set *or* an
+    /// explicit `vocabulary:` name is present.
+    pub fn preset_enabled(&self) -> bool {
+        self.use_preset_vocabulary || self.vocabulary.is_some()
+    }
+
+    /// Vocabulary file stem, `essay` unless overridden.
+    pub fn vocabulary_name(&self) -> &str {
+        self.vocabulary.as_deref().unwrap_or("essay")
+    }
+}
+
 /// True when `text` contains a standalone `...` line (rime table marker).
 pub fn is_rime_dict(text: &str) -> bool {
     text.lines().any(|line| line.trim() == RIME_TABLE_MARKER)
 }
 
+/// Reads the simple `key: value` settings before the `...` marker.
+/// Unknown keys are ignored, matching Rime's tolerant header handling.
+pub fn rime_settings(text: &str) -> RimeSettings {
+    let mut settings = RimeSettings::default();
+    for raw_line in text.lines() {
+        let trimmed = raw_line.trim();
+        if trimmed == RIME_TABLE_MARKER {
+            break;
+        }
+        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed == "---" {
+            continue;
+        }
+        let Some((key, value)) = trimmed.split_once(':') else {
+            continue;
+        };
+        let value = value.trim().trim_matches(['"', '\'']);
+        match key.trim() {
+            "use_preset_vocabulary" => {
+                settings.use_preset_vocabulary = matches!(
+                    value.to_ascii_lowercase().as_str(),
+                    "true" | "yes" | "on" | "1"
+                );
+            }
+            "vocabulary" if !value.is_empty() => {
+                settings.vocabulary = Some(value.to_string());
+            }
+            "max_phrase_length" => {
+                settings.max_phrase_length = value.parse().unwrap_or(0);
+            }
+            "min_phrase_weight" => {
+                settings.min_phrase_weight = value.parse().unwrap_or(0.0);
+            }
+            _ => {}
+        }
+    }
+    settings
+}
+
 /// Parse and validate `text`, auto-detecting the format.
 pub fn load_source(text: &str) -> Result<Source, String> {
+    load_source_with_preset(text, None)
+}
+
+/// Like [`load_source`], but resolves rime weights against `preset`:
+/// missing weights take the essay weight, percentages scale it, and all
+/// weights are multiplied by [`WEIGHT_SCALE`] (Rime keeps doubles).
+pub fn load_source_with_preset(text: &str, preset: Option<&PresetVocab>) -> Result<Source, String> {
     if is_rime_dict(text) {
-        load_rime(text)
+        load_rime(text, preset)
     } else {
         load_tsv(text)
     }
@@ -104,7 +176,7 @@ fn load_tsv(text: &str) -> Result<Source, String> {
 }
 
 /// Parse and validate a rime dict.yaml source (hanzi first, after `...`).
-fn load_rime(text: &str) -> Result<Source, String> {
+fn load_rime(text: &str, preset: Option<&PresetVocab>) -> Result<Source, String> {
     let mut collector = Collector::new();
     let mut in_table = false;
     for (index, raw_line) in text.lines().enumerate() {
@@ -134,7 +206,7 @@ fn load_rime(text: &str) -> Result<Source, String> {
         let hanzi = fields[0];
         let pinyin = canonical_pinyin(fields[1]);
         validate_raw_pinyin(fields[1], lineno)?;
-        let Some(freq) = parse_freq(fields.get(2).copied(), lineno)? else {
+        let Some(freq) = parse_rime_weight(fields.get(2).copied(), hanzi, preset, lineno)? else {
             continue; // zero weight = removed entry (rime tombstone)
         };
         validate_entry(&pinyin, hanzi, freq, lineno)?;
@@ -153,6 +225,61 @@ fn split_columns(line: &str) -> Vec<&str> {
     } else {
         line.split_whitespace().collect()
     }
+}
+
+/// Rime weight column. Without a preset vocabulary this keeps the old
+/// per-10000 percentage scaling; with one, missing weights take the essay
+/// weight and percentages scale it (Rime's `essay_weight * pct / 100`),
+/// fixed-point multiplied by [`WEIGHT_SCALE`]. Zero stays a tombstone.
+fn parse_rime_weight(
+    raw: Option<&str>,
+    hanzi: &str,
+    preset: Option<&PresetVocab>,
+    lineno: usize,
+) -> Result<Option<u32>, String> {
+    let Some(preset) = preset else {
+        return parse_freq(raw, lineno);
+    };
+    let essay = preset.weight(hanzi);
+    let Some(field) = raw else {
+        return Ok(match essay {
+            Some(0) => None,
+            Some(weight) => Some(weight.saturating_mul(WEIGHT_SCALE)),
+            None => Some(1),
+        });
+    };
+    if let Some(pct) = field.strip_suffix('%') {
+        let value = pct
+            .trim()
+            .parse::<f64>()
+            .map_err(|err| format!("line {lineno}: invalid percentage weight '{field}': {err}"))?;
+        if !(0.0..=100.0).contains(&value) {
+            return Err(format!(
+                "line {lineno}: percentage weight '{field}' outside 0..=100"
+            ));
+        }
+        if value == 0.0 {
+            return Ok(None);
+        }
+        let base = f64::from(essay.unwrap_or(1));
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let scaled = (base * value).round().max(1.0) as u32;
+        return Ok(Some(scaled));
+    }
+    let weight = field
+        .parse::<f64>()
+        .map_err(|err| format!("line {lineno}: invalid weight '{field}': {err}"))?;
+    if !weight.is_finite() || weight < 0.0 {
+        return Err(format!(
+            "line {lineno}: weight '{field}' must be finite and >= 0"
+        ));
+    }
+    if weight == 0.0 {
+        return Ok(None);
+    }
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let scaled = (weight * f64::from(WEIGHT_SCALE)).round().max(1.0) as u32;
+    Ok(Some(scaled))
 }
 
 /// Parse the optional frequency/weight column.
@@ -394,7 +521,7 @@ mod tests {
         let err = load_source("name: luna_pinyin\nkai\tkai\n").unwrap_err();
         assert!(err.contains("line 1"), "{err}");
         // Direct rime parsing without a marker is explicit about it.
-        let err = load_rime("kai\tkai\n").unwrap_err();
+        let err = load_rime("kai\tkai\n", None).unwrap_err();
         assert!(err.contains("table marker"), "{err}");
     }
 
@@ -404,5 +531,57 @@ mod tests {
         assert!(rendered.contains("syllables (2):"));
         assert!(rendered.contains("a ai"));
         assert!(rendered.contains("engine-core syllable table"));
+    }
+
+    #[test]
+    fn parses_preset_vocabulary_header() {
+        let text = "# Rime dictionary\nuse_preset_vocabulary: true\n\
+                    vocabulary: \"essay\"\nmax_phrase_length: 6\n\
+                    min_phrase_weight: 12.5\n...\nkai\tkai\n";
+        let settings = rime_settings(text);
+        assert!(settings.use_preset_vocabulary);
+        assert!(settings.preset_enabled());
+        assert_eq!(settings.vocabulary_name(), "essay");
+        assert_eq!(settings.max_phrase_length, 6);
+        assert!((settings.min_phrase_weight - 12.5).abs() < f64::EPSILON);
+        let plain = rime_settings("...\nkai\tkai\n");
+        assert!(!plain.preset_enabled());
+        assert_eq!(plain.vocabulary_name(), "essay");
+    }
+
+    #[test]
+    fn preset_weights_follow_rime_semantics() {
+        let preset = PresetVocab::parse("\u{5929}\t44972\n\u{8695}\t1\n").unwrap();
+        let text = "use_preset_vocabulary: true\n...\n\
+                    \u{5929}\ttian\n\u{8695}\tcan\t1%\n\u{8695}\ttian\t99%\n\
+                    \u{5929}\ttian\t0\n";
+        let source = load_source_with_preset(text, Some(&preset)).unwrap();
+        let tian = source
+            .entries
+            .iter()
+            .find(|e| e.hanzi == "\u{5929}")
+            .unwrap();
+        assert_eq!(tian.freq, 4_497_200);
+        let can = source
+            .entries
+            .iter()
+            .find(|e| e.hanzi == "\u{8695}" && e.pinyin == "can")
+            .unwrap();
+        assert_eq!(can.freq, 1);
+        let tian_silkworm = source
+            .entries
+            .iter()
+            .find(|e| e.hanzi == "\u{8695}" && e.pinyin == "tian")
+            .unwrap();
+        assert_eq!(tian_silkworm.freq, 99);
+    }
+
+    #[test]
+    fn preset_percentage_scales_the_essay_weight() {
+        // 1000 * 50% = 500 raw weight; fixed point x100 = 50_000.
+        let preset = PresetVocab::parse("\u{597d}\t1000\n").unwrap();
+        let text = "use_preset_vocabulary: true\n...\n\u{597d}\thao\t50%\n";
+        let source = load_source_with_preset(text, Some(&preset)).unwrap();
+        assert_eq!(source.entries[0].freq, 50_000);
     }
 }

@@ -22,8 +22,12 @@ pub enum Command {
         input_b: String,
         output: String,
     },
-    /// `compile <in> <out.ior>` (ior TSV or rime dict.yaml)
-    Compile { input: String, output: String },
+    /// `compile <in> <out.ior> [--vocabulary <path>]`
+    Compile {
+        input: String,
+        output: String,
+        vocabulary: Option<String>,
+    },
     /// `validate <in> [--dump-syllables]`
     Validate { input: String, dump_syllables: bool },
     /// `train <in> <out.gram>` (ior TSV or rime dict.yaml)
@@ -47,8 +51,11 @@ SUBCOMMANDS:
     export <in.ior> <out.tsv>           dump .ior binary back to TSV
     merge   <a.ior> <b.ior> -o <out.ior>
                                         merge two .ior files (freq-sum, sorted)
-    compile <in> <out.ior>              parse+validate+normalize (ior TSV or
-                                        rime dict.yaml), write .ior v2
+    compile <in> <out.ior> [--vocabulary <path>]
+                                        parse+validate+normalize (ior TSV or
+                                        rime dict.yaml), write .ior v2;
+                                        rime headers with use_preset_vocabulary
+                                        load essay.txt from the input's folder
     validate <in> [--dump-syllables]    structural check only; optionally list
                                         the distinct syllables of the input
 
@@ -106,10 +113,7 @@ pub fn parse_args(args: &[String]) -> Result<Command, String> {
             Ok(Command::Export { input, output })
         }
         "merge" => parse_merge(rest),
-        "compile" => {
-            let [input, output] = two_positional(rest, "compile <in> <out.ior>")?;
-            Ok(Command::Compile { input, output })
-        }
+        "compile" => parse_compile(rest),
         "validate" => parse_validate(rest),
         "train" => {
             let [input, output] = two_positional(rest, "train <in> <out.gram>")?;
@@ -166,6 +170,45 @@ fn two_positional(args: &[String], usage_line: &str) -> Result<[String; 2], Stri
         return Err(format!("expected: dict-tools {usage_line}"));
     };
     Ok([first.clone(), second.clone()])
+}
+
+/// Parse `compile <in> <out.ior> [--vocabulary <path>]`.
+fn parse_compile(args: &[String]) -> Result<Command, String> {
+    let usage_line = "compile <in> <out.ior> [--vocabulary <path>]";
+    let mut positional: Vec<String> = Vec::new();
+    let mut vocabulary: Option<String> = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--vocabulary" | "--vocab" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(format!(
+                        "--vocabulary needs a path: dict-tools {usage_line}"
+                    ));
+                };
+                vocabulary = Some(value.clone());
+                index += 2;
+            }
+            other if other.starts_with('-') => {
+                return Err(format!("unknown flag '{other}': dict-tools {usage_line}"));
+            }
+            other => {
+                positional.push(other.to_string());
+                index += 1;
+            }
+        }
+    }
+    if positional.len() != 2 {
+        return Err(format!("expected: dict-tools {usage_line}"));
+    }
+    let mut inputs = positional.into_iter();
+    let input = inputs.next().expect("checked len");
+    let output = inputs.next().expect("checked len");
+    Ok(Command::Compile {
+        input,
+        output,
+        vocabulary,
+    })
 }
 
 /// Parse `merge <a.ior> <b.ior> -o <out.ior>` (flag order is free).
@@ -289,11 +332,52 @@ fn execute<W: Write>(command: &Command, out: &mut W) -> Result<(), Error> {
                 ),
             )
         }
-        Command::Compile { input, output } => {
+        Command::Compile {
+            input,
+            output,
+            vocabulary,
+        } => {
             let text = read_text(input)?;
-            let source = crate::source::load_source(&text)
+            let settings = crate::source::rime_settings(&text);
+            if vocabulary.is_some() && !crate::source::is_rime_dict(&text) {
+                return Err(Error::Format(format!(
+                    "--vocabulary only applies to rime dict.yaml input: {input}"
+                )));
+            }
+            let mut preset_info: Option<(String, usize)> = None;
+            let preset = if settings.preset_enabled() || vocabulary.is_some() {
+                let path = vocabulary.clone().unwrap_or_else(|| {
+                    let name = settings.vocabulary_name();
+                    let parent = std::path::Path::new(input)
+                        .parent()
+                        .unwrap_or_else(|| std::path::Path::new("."));
+                    parent
+                        .join(format!("{name}.txt"))
+                        .to_string_lossy()
+                        .into_owned()
+                });
+                let vocab_text = read_text(&path)?;
+                let vocab = crate::preset::PresetVocab::parse(&vocab_text)
+                    .map_err(|err| Error::Format(format!("{path}: {err}")))?;
+                preset_info = Some((path, vocab.len()));
+                Some(vocab)
+            } else {
+                None
+            };
+            let source = crate::source::load_source_with_preset(&text, preset.as_ref())
                 .map_err(|err| Error::Format(format!("{input}: {err}")))?;
-            let entries = format::normalize(source.entries);
+            let mut entries = format::normalize(source.entries);
+            let mut preset_entries = 0;
+            if let Some(vocab) = preset.as_ref() {
+                let extra = vocab.encode(
+                    &entries,
+                    settings.max_phrase_length,
+                    settings.min_phrase_weight,
+                );
+                preset_entries = extra.len();
+                entries.extend(extra);
+                entries = format::normalize(entries);
+            }
             let bytes = format::serialize(&entries);
             write_bytes(output, &bytes)?;
             let keys = distinct_keys(&entries);
@@ -307,6 +391,14 @@ fn execute<W: Write>(command: &Command, out: &mut W) -> Result<(), Error> {
                     format::VERSION
                 ),
             )?;
+            if let Some((path, words)) = preset_info {
+                report(
+                    out,
+                    &format!(
+                        "preset vocabulary {path}: {words} phrase(s), {preset_entries} encoded entrie(s)"
+                    ),
+                )?;
+            }
             report_duplicate_note(out, source.duplicate_pairs)
         }
         Command::Validate {
