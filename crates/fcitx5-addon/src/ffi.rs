@@ -511,6 +511,16 @@ mod tests {
 
     const NIHAO: [u32; 5] = [0x6E, 0x69, 0x68, 0x61, 0x6F]; // n i h a o
 
+    /// Host-independent engine: builtin dictionary + default config, so
+    /// installing a real `core.ior` cannot change FFI test candidates.
+    fn test_engine() -> *mut IorEngine {
+        let engine = engine_state::new_engine_with(
+            engine_core::config::EngineConfig::default(),
+            engine_core::dict::Dictionary::builtin(),
+        );
+        Box::into_raw(Box::new(engine))
+    }
+
     #[test]
     fn abi_version_is_two() {
         assert_eq!(unsafe_or_safe_abi(), 2);
@@ -519,7 +529,7 @@ mod tests {
     #[test]
     fn full_flow_nihao() {
         // SAFETY: engine stays live until ior_engine_free below.
-        let engine = ior_engine_new();
+        let engine = test_engine();
         assert!(!engine.is_null());
         assert_eq!(text(unsafe { ior_engine_preedit(engine) }), "");
 
@@ -542,7 +552,7 @@ mod tests {
     #[test]
     fn digit_select_commits() {
         // SAFETY: engine stays live until ior_engine_free below.
-        let engine = ior_engine_new();
+        let engine = test_engine();
         type_keys(engine, &[0x6E, 0x69]); // n i
         let count = unsafe { ior_engine_candidate_count(engine) };
         assert!(count >= 2, "need a second candidate, got {count}");
@@ -557,7 +567,7 @@ mod tests {
     #[test]
     fn backspace_and_escape_edit() {
         // SAFETY: engine stays live until ior_engine_free below.
-        let engine = ior_engine_new();
+        let engine = test_engine();
         type_keys(engine, &NIHAO);
         assert_eq!(unsafe { ior_engine_process_key(engine, 0xFF08) }, 1);
         let after_bs = text(unsafe { ior_engine_preedit(engine) });
@@ -572,7 +582,7 @@ mod tests {
     #[test]
     fn forward_and_unknown_keysyms() {
         // SAFETY: engine stays live until ior_engine_free below.
-        let engine = ior_engine_new();
+        let engine = test_engine();
         // Uppercase 'A' is outside the engine's lowercase editing alphabet.
         assert_eq!(unsafe { ior_engine_process_key(engine, 0x41) }, 0);
         // Left arrow is not mapped at all.
@@ -585,7 +595,7 @@ mod tests {
     #[test]
     fn shift_keysym_toggles_mode_and_commits_raw() {
         // SAFETY: engine stays live until ior_engine_free below.
-        let engine = ior_engine_new();
+        let engine = test_engine();
         type_keys(engine, &NIHAO);
         assert_eq!(unsafe { ior_engine_ascii_mode(engine) }, 0);
         // Shift press triggers the toggle; the pending preedit is committed
@@ -606,7 +616,7 @@ mod tests {
     #[test]
     fn page_keysyms_and_page_info() {
         // SAFETY: engine stays live until ior_engine_free below.
-        let engine = ior_engine_new();
+        let engine = test_engine();
         // No candidates: page_info is 0 and paging is a no-op.
         assert_eq!(unsafe { ior_engine_page_info(engine) }, 0);
         assert_eq!(unsafe { ior_engine_page_next(engine) }, 0);
@@ -628,7 +638,7 @@ mod tests {
     #[test]
     fn select_commits_page_local_index() {
         // SAFETY: engine stays live until ior_engine_free below.
-        let engine = ior_engine_new();
+        let engine = test_engine();
         type_keys(engine, &[0x73, 0x68, 0x69]); // s h i
                                                 // Capture the expected text before selecting: the select call
                                                 // resets the composition and with it the candidate list.
@@ -650,7 +660,7 @@ mod tests {
     #[test]
     fn set_ascii_mode_round_trip() {
         // SAFETY: engine stays live until ior_engine_free below.
-        let engine = ior_engine_new();
+        let engine = test_engine();
         type_keys(engine, &[0x6E, 0x69]); // n i
         assert_eq!(unsafe { ior_engine_set_ascii_mode(engine, 1) }, 1);
         assert_eq!(text(unsafe { ior_engine_take_commit(engine) }), "ni");

@@ -2,7 +2,8 @@
 //! (self-made fixture, NOT the layout of any real scheme) decodes typed
 //! code pairs into full pinyin while the preedit keeps showing the typed
 //! letters, learning records the transformed key, and every non-`Custom`
-//! configuration behaves exactly like plain full pinyin.
+//! configuration behaves exactly like plain full pinyin. The bundled real
+//! schemes (自然碼/小鶴/微軟) are exercised through their session paths too.
 
 use engine_core::config::{default_config, DoublePinyin, EngineConfig};
 use engine_core::dict::Dictionary;
@@ -139,4 +140,48 @@ fn paging_and_digit_selection_work_under_double_pinyin() {
         process_key(&mut s, '1'),
         ProcessResult::Committed("五".to_string())
     );
+}
+
+/// The three bundled schemes install their tables at construction: typing
+/// their codes yields the same candidates as the equivalent full pinyin.
+#[test]
+fn builtin_schemes_decode_at_the_session_level() {
+    // ni hao -> 自然碼 "nihk", 小鶴 "nihc", 微軟 "nihk"
+    for (scheme, typed) in [
+        (DoublePinyin::Natural, "nihk"),
+        (DoublePinyin::Xiaohe, "nihc"),
+        (DoublePinyin::Mspy, "nihk"),
+    ] {
+        let cfg = EngineConfig {
+            double_pinyin: scheme,
+            ..EngineConfig::default()
+        };
+        let mut s = new_session_with(cfg, Dictionary::builtin());
+        for ch in typed.chars() {
+            assert_eq!(process_key(&mut s, ch), ProcessResult::Editing);
+        }
+        assert_eq!(preedit(&s), typed, "{scheme:?} keeps the typed codes");
+        let cands = session::candidates(&s, 10);
+        assert!(
+            cands.iter().any(|c| c.text == "你好"),
+            "{scheme:?}: no 你好 in {:?}",
+            cands.iter().map(|c| &c.text).collect::<Vec<_>>()
+        );
+    }
+}
+
+/// zh/ch/sh are one key of their own in the real schemes: 自然碼 types
+/// zhong as (zh=v)(ong=s) = "vs", and the preedit still shows "vs".
+#[test]
+fn builtin_scheme_multi_letter_initials_decode() {
+    let cfg = EngineConfig {
+        double_pinyin: DoublePinyin::Natural,
+        ..EngineConfig::default()
+    };
+    let mut s = new_session_with(cfg, Dictionary::builtin());
+    for ch in "vs".chars() {
+        assert_eq!(process_key(&mut s, ch), ProcessResult::Editing);
+    }
+    let cands = session::candidates(&s, 10);
+    assert_eq!(cands[0].text, "中", "zhong must be the top candidate");
 }

@@ -37,8 +37,8 @@
 //! # Schema keys (defaults mirror `engine_core::config`)
 //! - `engine.shift_action` — `"commit"` | `"temp"` | `"none"`
 //!   (↔ engine-core `ShiftAction::CommitRaw` / `CommitBest` / `Clear`)
-//! - `engine.double_pinyin` — `"off"` | `"custom"` (real scheme enums
-//!   join once the 自然码/小鹤/微软 key tables are imported as data)
+//! - `engine.double_pinyin` — `"off"` | `"natural"` | `"xiaohe"`
+//!   (alias `"flypy"`) | `"mspy"` | `"custom"`
 //! - `engine.chinese_punct`, `engine.user_learning` — booleans
 //! - `engine.page_size`, `engine.max_candidates` — integers >= 1
 //! - `engine.fuzzy.{z_zh,c_ch,s_sh,n_l,f_h,an_ang,en_eng,in_ing}` —

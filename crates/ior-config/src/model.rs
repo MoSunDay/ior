@@ -40,15 +40,21 @@ impl ShiftAction {
     }
 }
 
-/// `engine.double_pinyin`: mirrors engine-core's `DoublePinyin`. The real
-/// scheme tables (自然码/小鹤/微软) are imported as data files in P1+;
-/// this enum deliberately names the *mode* only — a scheme picker
-/// (e.g. `"flypy"` / `"ziranma"`) joins here once the data lands.
+/// `engine.double_pinyin`: mirrors engine-core's `DoublePinyin`. The
+/// builtin schemes decode through the tables converted from the rime
+/// schema algebra (`data/double-pinyin/*.tsv`); `custom` decodes via a
+/// host-installed table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DoublePinyin {
     /// `"off"`: full pinyin, typed letters segmented as-is.
     #[default]
     Off,
+    /// `"natural"`: 自然碼雙拼.
+    Natural,
+    /// `"xiaohe"`: 小鶴雙拼.
+    Xiaohe,
+    /// `"mspy"`: 微軟雙拼.
+    Mspy,
     /// `"custom"`: decode via the host-installed `DpTable`.
     Custom,
 }
@@ -58,14 +64,22 @@ impl DoublePinyin {
     pub fn as_str(self) -> &'static str {
         match self {
             DoublePinyin::Off => "off",
+            DoublePinyin::Natural => "natural",
+            DoublePinyin::Xiaohe => "xiaohe",
+            DoublePinyin::Mspy => "mspy",
             DoublePinyin::Custom => "custom",
         }
     }
 
-    /// Parses one of `"off"` | `"custom"`.
+    /// Parses one of `"off"` | `"natural"` | `"xiaohe"` | `"mspy"` |
+    /// `"custom"`.
     pub fn parse(text: &str) -> Option<Self> {
         match text {
             "off" => Some(DoublePinyin::Off),
+            "natural" => Some(DoublePinyin::Natural),
+            // rime names the scheme file `flypy`; accept it as an alias
+            "xiaohe" | "flypy" => Some(DoublePinyin::Xiaohe),
+            "mspy" => Some(DoublePinyin::Mspy),
             "custom" => Some(DoublePinyin::Custom),
             _ => None,
         }
@@ -273,11 +287,18 @@ mod tests {
             assert_eq!(action.as_str(), text);
         }
         assert_eq!(ShiftAction::parse("raw"), None);
-        for (mode, text) in [(DoublePinyin::Off, "off"), (DoublePinyin::Custom, "custom")] {
+        for (mode, text) in [
+            (DoublePinyin::Off, "off"),
+            (DoublePinyin::Natural, "natural"),
+            (DoublePinyin::Xiaohe, "xiaohe"),
+            (DoublePinyin::Mspy, "mspy"),
+            (DoublePinyin::Custom, "custom"),
+        ] {
             assert_eq!(DoublePinyin::parse(text), Some(mode));
             assert_eq!(mode.as_str(), text);
         }
-        assert_eq!(DoublePinyin::parse("flypy"), None);
+        assert_eq!(DoublePinyin::parse("flypy"), Some(DoublePinyin::Xiaohe));
+        assert_eq!(DoublePinyin::parse("shuangpin"), None);
     }
 
     #[test]

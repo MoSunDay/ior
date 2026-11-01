@@ -59,12 +59,10 @@ fn parse_engine(value: &Value, warnings: &mut Vec<String>) -> Result<Engine, Str
                 )?
             }
             "double_pinyin" => {
-                // Scheme values (自然码/小鹤/微软) join this list after the
-                // key-table data import in P1+.
                 engine.double_pinyin = parse_enum(
                     value,
                     "engine.double_pinyin",
-                    &["off", "custom"],
+                    &["off", "natural", "xiaohe", "mspy", "custom"],
                     DoublePinyin::parse,
                 )?
             }
@@ -236,9 +234,19 @@ mod tests {
         let mut t = default_table();
         t.get_table_mut("engine")
             .unwrap()
-            .insert("double_pinyin".into(), Value::Str("flypy".into()));
+            .insert("double_pinyin".into(), Value::Str("shuangpin".into()));
         let err = from_table(&t).unwrap_err();
         assert!(err.starts_with("engine.double_pinyin: expected one of"));
+
+        // rime's file name for 小鶴 is `flypy`; it is accepted as an alias
+        let mut t = default_table();
+        t.get_table_mut("engine")
+            .unwrap()
+            .insert("double_pinyin".into(), Value::Str("flypy".into()));
+        assert_eq!(
+            from_table(&t).unwrap().config.engine.double_pinyin,
+            DoublePinyin::Xiaohe
+        );
 
         let mut t = default_table();
         t.get_table_mut("engine")

@@ -15,6 +15,7 @@ name = "fcitx5-ior"
 version = "0.1.0"
 dependencies = [
  "engine-core",
+ "ior-config",
 ]
 
 [[package]]

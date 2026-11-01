@@ -15,11 +15,13 @@
 use std::ffi::CString;
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use engine_core::default_config;
+use engine_core::config::{self as core_config, EngineConfig, FuzzyConfig};
+use engine_core::dict::Dictionary;
 use engine_core::session::{self, ProcessResult, Session};
 use engine_core::user_dict::{self, UserDict};
+use ior_config as user_config;
 
 /// Opaque engine handed to C. Boxed by [`crate::ffi::ior_engine_new`] and
 /// freed by [`crate::ffi::ior_engine_free`]; C never touches its layout.
@@ -37,11 +39,19 @@ pub struct IorEngine {
     pub candidates_buf: Vec<CString>,
 }
 
-/// Builds an engine around a default-config session over the builtin
-/// dictionary, with freshly computed display buffers.
+/// Builds an engine at client start: user config (`$XDG_CONFIG_HOME/
+/// fcitx5/ior/config.toml`, all defaults when absent or invalid), the
+/// `core.ior` dictionary when installed (user data dir first, then the
+/// system share dir), and freshly computed display buffers.
 pub fn new_engine() -> IorEngine {
+    new_engine_with(startup_config(), startup_dictionary())
+}
+
+/// Builds an engine over caller-supplied config + dictionary. Tests use
+/// this to stay independent of data installed on the host.
+pub fn new_engine_with(engine_config: EngineConfig, dict: Dictionary) -> IorEngine {
     let mut engine = IorEngine {
-        session: session::new_session(default_config()),
+        session: session::new_session_with(engine_config, dict),
         preedit_buf: CString::new("").expect("empty CString"),
         commit_buf: CString::new("").expect("empty CString"),
         commit_taken: false,
@@ -49,6 +59,122 @@ pub fn new_engine() -> IorEngine {
     };
     refresh(&mut engine);
     engine
+}
+
+/// Engine config for a fresh client: the user's TOML over the defaults.
+pub fn startup_config() -> EngineConfig {
+    let Some(path) = config_path(
+        std::env::var("XDG_CONFIG_HOME").ok().as_deref(),
+        std::env::var("HOME").ok().as_deref(),
+    ) else {
+        return core_config::default_config();
+    };
+    match read_user_config(&path) {
+        Some(config) => to_engine_config(&config),
+        None => core_config::default_config(),
+    }
+}
+
+/// Dictionary for a fresh client: installed `core.ior` when present and
+/// loadable, the builtin table otherwise.
+pub fn startup_dictionary() -> Dictionary {
+    let paths = dict_paths(
+        std::env::var("XDG_DATA_HOME").ok().as_deref(),
+        std::env::var("HOME").ok().as_deref(),
+    );
+    for path in paths {
+        match fs::read(&path) {
+            Ok(bytes) => match Dictionary::from_ior_bytes(&bytes) {
+                Ok(dict) => return dict,
+                Err(err) => eprintln!("ior: {}: {err}", path.display()),
+            },
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => eprintln!("ior: {}: {err}", path.display()),
+        }
+    }
+    Dictionary::builtin()
+}
+
+/// `$XDG_CONFIG_HOME/fcitx5/ior/config.toml`, falling back to
+/// `$HOME/.config/fcitx5/ior/config.toml` (pure resolution).
+fn config_path(xdg_config_home: Option<&str>, home: Option<&str>) -> Option<PathBuf> {
+    let base = match xdg_config_home {
+        Some(dir) if !dir.is_empty() => PathBuf::from(dir),
+        _ => home.map(|h| Path::new(h).join(".config"))?,
+    };
+    Some(base.join("fcitx5").join("ior").join("config.toml"))
+}
+
+/// Dictionary lookup order: the user data dir first (lets a user drop in
+/// an updated `core.ior` without touching /usr), then the system share
+/// dir the install script targets.
+fn dict_paths(xdg_data_home: Option<&str>, home: Option<&str>) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    let user_base = match xdg_data_home {
+        Some(dir) if !dir.is_empty() => Some(PathBuf::from(dir)),
+        _ => home.map(|h| Path::new(h).join(".local").join("share")),
+    };
+    if let Some(base) = user_base {
+        paths.push(base.join("fcitx5").join("ior").join("core.ior"));
+    }
+    paths.push(PathBuf::from("/usr/share/fcitx5/ior/core.ior"));
+    paths
+}
+
+/// Reads and validates one user config file; `None` (after a one-line
+/// stderr diagnostic, which fcitx5 shows in its journal) on any error.
+fn read_user_config(path: &Path) -> Option<user_config::Config> {
+    let text = fs::read_to_string(path).ok()?;
+    match user_config::apply_with_warnings(
+        &user_config::default_table(),
+        &user_config::parse(&text).ok()?,
+    ) {
+        Ok(loaded) => {
+            for warning in loaded.warnings {
+                eprintln!("ior: {}: {warning}", path.display());
+            }
+            Some(loaded.config)
+        }
+        Err(err) => {
+            eprintln!("ior: {}: {err}", path.display());
+            None
+        }
+    }
+}
+
+/// Maps the user-facing config model onto engine-core's runtime config.
+fn to_engine_config(cfg: &user_config::Config) -> EngineConfig {
+    let shift_action = match cfg.engine.shift_action {
+        user_config::ShiftAction::Commit => core_config::ShiftAction::CommitRaw,
+        user_config::ShiftAction::Temp => core_config::ShiftAction::CommitBest,
+        user_config::ShiftAction::Drop => core_config::ShiftAction::Clear,
+    };
+    let double_pinyin = match cfg.engine.double_pinyin {
+        user_config::DoublePinyin::Off => core_config::DoublePinyin::Off,
+        user_config::DoublePinyin::Natural => core_config::DoublePinyin::Natural,
+        user_config::DoublePinyin::Xiaohe => core_config::DoublePinyin::Xiaohe,
+        user_config::DoublePinyin::Mspy => core_config::DoublePinyin::Mspy,
+        user_config::DoublePinyin::Custom => core_config::DoublePinyin::Custom,
+    };
+    let fuzzy = &cfg.engine.fuzzy;
+    EngineConfig {
+        fuzzy: FuzzyConfig {
+            z_zh: fuzzy.z_zh,
+            c_ch: fuzzy.c_ch,
+            s_sh: fuzzy.s_sh,
+            n_l: fuzzy.n_l,
+            f_h: fuzzy.f_h,
+            an_ang: fuzzy.an_ang,
+            en_eng: fuzzy.en_eng,
+            in_ing: fuzzy.in_ing,
+        },
+        double_pinyin,
+        user_learning: cfg.engine.user_learning,
+        page_size: cfg.engine.page_size,
+        max_candidates: cfg.engine.max_candidates,
+        chinese_punct: cfg.engine.chinese_punct,
+        shift_action,
+    }
 }
 
 /// Feeds one mapped character to the session and refreshes the display
@@ -268,7 +394,7 @@ mod tests {
     fn ma_engine(raw: &str) -> IorEngine {
         let dict = Dictionary::from_tsv(MA_TSV).expect("tsv");
         let mut engine = IorEngine {
-            session: session::new_session_with(default_config(), dict),
+            session: session::new_session_with(core_config::default_config(), dict),
             preedit_buf: to_cstring(""),
             commit_buf: to_cstring(""),
             commit_taken: false,
@@ -379,5 +505,81 @@ mod tests {
         process_key(&mut engine, 'i');
         assert_eq!(engine.preedit_buf.to_str(), Ok("ni"));
         assert!(!engine.candidates_buf.is_empty());
+    }
+    #[test]
+    fn config_path_prefers_xdg_then_home() {
+        assert_eq!(
+            config_path(Some("/xdg"), Some("/home/u")),
+            Some(PathBuf::from("/xdg/fcitx5/ior/config.toml"))
+        );
+        assert_eq!(
+            config_path(None, Some("/home/u")),
+            Some(PathBuf::from("/home/u/.config/fcitx5/ior/config.toml"))
+        );
+        assert_eq!(config_path(None, None), None);
+        // an empty XDG_CONFIG_HOME falls back to HOME
+        assert_eq!(
+            config_path(Some(""), Some("/home/u")),
+            Some(PathBuf::from("/home/u/.config/fcitx5/ior/config.toml"))
+        );
+    }
+
+    #[test]
+    fn dict_path_prefers_user_data_dir_then_system() {
+        assert_eq!(
+            dict_paths(Some("/xdg"), Some("/home/u")),
+            vec![
+                PathBuf::from("/xdg/fcitx5/ior/core.ior"),
+                PathBuf::from("/usr/share/fcitx5/ior/core.ior"),
+            ]
+        );
+        assert_eq!(
+            dict_paths(None, Some("/home/u")),
+            vec![
+                PathBuf::from("/home/u/.local/share/fcitx5/ior/core.ior"),
+                PathBuf::from("/usr/share/fcitx5/ior/core.ior"),
+            ]
+        );
+        assert_eq!(
+            dict_paths(None, None),
+            vec![PathBuf::from("/usr/share/fcitx5/ior/core.ior")]
+        );
+    }
+
+    #[test]
+    fn user_toml_maps_onto_engine_config() {
+        let text = "[engine]\nshift_action = \"none\"\ndouble_pinyin = \"flypy\"\n\
+                    page_size = 7\nmax_candidates = 12\nchinese_punct = false\n\
+                    user_learning = false\n[engine.fuzzy]\nz_zh = true\nn_l = true\n";
+        let loaded = user_config::apply(
+            &user_config::default_table(),
+            &user_config::parse(text).expect("parse"),
+        )
+        .expect("apply");
+        let cfg = to_engine_config(&loaded);
+        assert_eq!(cfg.shift_action, core_config::ShiftAction::Clear);
+        assert_eq!(cfg.double_pinyin, core_config::DoublePinyin::Xiaohe);
+        assert_eq!(cfg.page_size, 7);
+        assert_eq!(cfg.max_candidates, 12);
+        assert!(!cfg.chinese_punct);
+        assert!(!cfg.user_learning);
+        assert!(cfg.fuzzy.z_zh && cfg.fuzzy.n_l);
+        assert!(!cfg.fuzzy.an_ang);
+    }
+
+    #[test]
+    fn startup_config_survives_missing_or_broken_files() {
+        let dir = std::env::temp_dir().join(format!("ior-cfg-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).expect("mkdir");
+        let path = dir.join("config.toml");
+        // missing file -> defaults
+        assert!(read_user_config(&path).is_none());
+        // broken TOML -> None, no panic
+        fs::write(&path, "not toml at all\n").expect("write");
+        assert!(read_user_config(&path).is_none());
+        // unknown key -> warning but a usable config
+        fs::write(&path, "[engine]\nunknown_knob = 1\n").expect("write");
+        assert!(read_user_config(&path).is_some());
+        fs::remove_dir_all(&dir).ok();
     }
 }

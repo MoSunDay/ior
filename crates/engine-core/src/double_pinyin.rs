@@ -31,6 +31,7 @@
 //! odd length, or invalid produced syllable makes the whole transform
 //! return `None`.
 
+use crate::config::DoublePinyin;
 use crate::syllable::is_syllable;
 
 /// A loaded double-pinyin table: pure data, no scheme logic.
@@ -106,6 +107,50 @@ pub fn parse_tsv(text: &str) -> Result<DpTable, String> {
         }
     }
     Ok(table)
+}
+
+/// The real scheme tables converted from the rime schema algebra by
+/// `scripts/convert-rime-double-pinyin.py`. Bundled via `include_str!`
+/// so the engine stays I/O-free; parse failures are impossible for the
+/// checked-in files (the roundtrip tests below load them verbatim).
+pub fn builtin(scheme: DoublePinyin) -> Option<DpTable> {
+    let text = match scheme {
+        DoublePinyin::Natural => Some(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../data/double-pinyin/natural.tsv"
+        ))),
+        DoublePinyin::Xiaohe => Some(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../data/double-pinyin/flypy.tsv"
+        ))),
+        DoublePinyin::Mspy => Some(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../data/double-pinyin/mspy.tsv"
+        ))),
+        DoublePinyin::Off | DoublePinyin::Custom => None,
+    }?;
+    Some(parse_tsv(text).expect("bundled double-pinyin table must parse"))
+}
+
+/// Builtin tables are the same three checked-in files the tests verify.
+#[cfg(test)]
+mod builtin_tests {
+    use super::*;
+
+    #[test]
+    fn builtin_schemes_parse_and_decode() {
+        // ni hao: 自然碼 "nihk", 小鶴 "nihc", 微軟 "nihk"
+        for (scheme, hao) in [
+            (DoublePinyin::Natural, "nihk"),
+            (DoublePinyin::Xiaohe, "nihc"),
+            (DoublePinyin::Mspy, "nihk"),
+        ] {
+            let table = builtin(scheme).unwrap_or_else(|| panic!("{scheme:?}"));
+            assert_eq!(to_full(&table, hao).as_deref(), Some("ni'hao"));
+        }
+        assert!(builtin(DoublePinyin::Off).is_none());
+        assert!(builtin(DoublePinyin::Custom).is_none());
+    }
 }
 
 /// Decodes a double-pinyin string into a `'`-joined full-pinyin key

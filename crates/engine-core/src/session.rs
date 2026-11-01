@@ -31,9 +31,10 @@ pub struct Session {
     pub config: EngineConfig,
     /// Static dictionary (canonical keys; fuzzy matching is query-side).
     pub dict: Dictionary,
-    /// Double-pinyin table used when `config.double_pinyin` is `Custom`
-    /// (loaded by the host with `double_pinyin::parse_tsv`; `None` leaves
-    /// double-pinyin decoding inactive).
+    /// Active double-pinyin table. Filled at construction for the builtin
+    /// schemes (`Natural`/`Xiaohe`/`Mspy`, bundled data) and installed by
+    /// the host for `Custom` (`double_pinyin::parse_tsv`); `None` with a
+    /// non-`Off` config leaves double-pinyin decoding inactive.
     pub dp_table: Option<DpTable>,
     /// Learned entries for this user.
     pub user_dict: UserDict,
@@ -69,11 +70,12 @@ pub fn new_session(config: EngineConfig) -> Session {
 /// Creates a session over a caller-supplied dictionary (e.g. `.ior`
 /// layers merged with [`Dictionary::from_ior_layers`]).
 pub fn new_session_with(config: EngineConfig, dict: Dictionary) -> Session {
+    let dp_table = double_pinyin::builtin(config.double_pinyin);
     Session {
         raw: String::new(),
         config,
         dict,
-        dp_table: None,
+        dp_table,
         user_dict: user_dict::new(),
         ascii_mode: false,
         ascii_punct: false,
@@ -82,11 +84,9 @@ pub fn new_session_with(config: EngineConfig, dict: Dictionary) -> Session {
     }
 }
 
-/// Installs (or clears) the double-pinyin table used for decoding when
-/// `config.double_pinyin` is [`DoublePinyin::Custom`]. The host loads the
-/// table text with `double_pinyin::parse_tsv`; no table is bundled with
-/// the engine (real scheme tables are pending data import, see the
-/// `double_pinyin` module docs).
+/// Installs (or clears) the double-pinyin table used for decoding with
+/// [`DoublePinyin::Custom`]; the builtin schemes are installed by
+/// [`new_session_with`] and need no call here.
 pub fn set_double_pinyin(s: &mut Session, table: Option<DpTable>) {
     s.dp_table = table;
 }
@@ -320,8 +320,8 @@ fn handle_punct(s: &mut Session, ch: char) -> ProcessResult {
 }
 
 /// Up to `min(limit, config.max_candidates)` candidates for the preedit.
-/// Decoding runs on the double-pinyin transform of the raw buffer when
-/// `config.double_pinyin` is `Custom` and a table is installed (a failed
+/// Decoding runs on the double-pinyin transform of the raw buffer when a
+/// table is active (builtin scheme or `Custom` + installed table; a failed
 /// transform falls back to the raw letters); the preedit itself keeps
 /// showing `s.raw`.
 pub fn candidates(s: &Session, limit: usize) -> Vec<Candidate> {
@@ -335,16 +335,14 @@ pub fn candidates(s: &Session, limit: usize) -> Vec<Candidate> {
     decoder::candidates_with(&s.dict, user, &s.config.fuzzy, &raw, limit)
 }
 
-/// The string decoding operates on: `s.raw` under the raw-key modes, or
-/// its double-pinyin expansion when `config.double_pinyin` is `Custom`
-/// with an installed table. A transform that fails (odd length, unknown
-/// code, invalid syllable) keeps the raw letters so typing stays live.
+/// The string decoding operates on: `s.raw` under full pinyin, or its
+/// double-pinyin expansion when a table is active. A transform that fails
+/// (odd length, unknown code, invalid syllable) keeps the raw letters so
+/// typing stays live.
 fn decode_input(s: &Session) -> String {
     match (&s.config.double_pinyin, &s.dp_table) {
-        (DoublePinyin::Custom, Some(table)) => {
-            double_pinyin::to_full(table, &s.raw).unwrap_or_else(|| s.raw.clone())
-        }
-        _ => s.raw.clone(),
+        (DoublePinyin::Off, _) | (_, None) => s.raw.clone(),
+        (_, Some(table)) => double_pinyin::to_full(table, &s.raw).unwrap_or_else(|| s.raw.clone()),
     }
 }
 

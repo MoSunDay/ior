@@ -26,18 +26,23 @@ pub struct FuzzyConfig {
     pub in_ing: bool,
 }
 
-/// Double-pinyin mode. `Off` keeps full-pinyin input; `Custom` decodes the
-/// typed letters through a host-loaded [`crate::double_pinyin::DpTable`]
-/// (see `session::set_double_pinyin`). There is deliberately no builtin
-/// scheme: the real key tables (自然码/小鹤/微软) are data files waiting to
-/// be imported into `data/` once network access is back, so a `Custom`
-/// session without a table simply decodes nothing extra (the raw letters
-/// are used as-is).
+/// Double-pinyin mode. `Off` keeps full-pinyin input; the three named
+/// schemes decode through the builtin tables bundled from
+/// `data/double-pinyin/*.tsv` (converted from the rime schema algebra);
+/// `Custom` decodes through a host-loaded [`crate::double_pinyin::DpTable`]
+/// (see `session::set_double_pinyin`). Without a usable table the raw
+/// letters are used as-is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DoublePinyin {
     /// Full pinyin: the typed letters are segmented as-is.
     #[default]
     Off,
+    /// 自然碼雙拼 (`data/double-pinyin/natural.tsv`).
+    Natural,
+    /// 小鶴雙拼 (`data/double-pinyin/flypy.tsv`).
+    Xiaohe,
+    /// 微軟雙拼 (`data/double-pinyin/mspy.tsv`).
+    Mspy,
     /// Decode via the table installed on the session (fall back to the raw
     /// letters when no table is installed or the transform fails).
     Custom,
