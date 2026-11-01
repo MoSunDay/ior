@@ -22,7 +22,11 @@ cd crates/fcitx5-addon/cpp
 cmake -S . -B build -G Ninja -DCMAKE_INSTALL_PREFIX=/usr
 cmake --build build            # 自动先 cargo build --release -p fcitx5-ior
 sudo cmake --install build
+sudo gtk-update-icon-cache -f /usr/share/icons/hicolor  # 刷新主题图标缓存
 ```
+
+注意：图标改动（或从旧路径清除）后必须刷新 hicolor 缓存并重启 fcitx5，
+否则托盘 logo 可能解析到已删除的路径而消失。
 
 安装布局（fcitx5 约定）：
 
@@ -46,12 +50,13 @@ fcitx5-remote -s ior           # 切到 ior（也可用 fcitx5-configtool）
 # GTK3 / Qt5 / XIM 三前端任意应用中输入：
 #   nihao + Space → 你好    xian + 2 → 选次候选    vk + Space → 原样透传
 #   Shift 单击（无修饰组合）→ 中/英切换    , → ，（中文标点）
-#   Page_Down / Page_Up → 候选翻页（编码激活时）
+#   Page_Down / Page_Up 或 - / = → 候选翻页（编码激活时；键可配）
 ```
 
 ## C ABI（v2）
 
-`ior_engine_abi_version()` 返回 **2**；共 **18 个** `ior_` 符号
+`ior_engine_abi_version()` 返回 **2**；共 **29 个** `ior_` 符号
+（18 个 v2 核心 + 10 个 voice 增补 + 1 个 `page_key_direction` 翻页键查询）
 （声明见 `ioraddon.h`，Rust 侧源 `crates/fcitx5-addon/src/ffi.rs`）。
 v2 相对 v1 的变化：
 
