@@ -259,7 +259,6 @@ fn to_cstring(s: &str) -> CString {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine_core::config::FuzzyConfig;
     use engine_core::dict::Dictionary;
 
     /// Ten entries for `ma` (frequency order) so paging has two full pages.
@@ -267,7 +266,7 @@ mod tests {
 
     /// Engine over the ten-entry dictionary with preedit `raw`.
     fn ma_engine(raw: &str) -> IorEngine {
-        let dict = Dictionary::from_tsv_with(MA_TSV, &FuzzyConfig::default()).expect("tsv");
+        let dict = Dictionary::from_tsv(MA_TSV).expect("tsv");
         let mut engine = IorEngine {
             session: session::new_session_with(default_config(), dict),
             preedit_buf: to_cstring(""),

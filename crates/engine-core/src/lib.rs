@@ -9,38 +9,51 @@
 //! Module map:
 //! - [`syllable`]: the toneless pinyin syllable table;
 //! - [`segmenter`]: all/best splits of a letter run into syllables;
-//! - [`config`]: fuzzy-pinyin flags and engine settings;
-//! - [`dict`]: static pinyin -> hanzi dictionary (fuzzy rules baked into keys);
+//! - [`config`]: fuzzy-pinyin flags, double-pinyin mode and engine settings;
+//! - [`spelling`]: query-side spelling pipeline (fuzzy variants, 简拼);
+//! - [`double_pinyin`]: loadable double-pinyin key tables + transform;
+//! - [`dict`]: static pinyin -> hanzi dictionary (canonical keys, initials
+//!   index for 简拼);
 //! - [`user_dict`]: learned frequencies;
 //! - [`punct`]: Chinese punctuation mapping (data-driven, paired quotes);
 //! - [`decoder`]: candidate assembly for a raw input (M2: trigram + beam
 //!   search replaces this);
 //! - [`session`]: key handling, preedit, commit and learning.
 //!
-//! Roadmap: trigram/beam-search decoding and additional fuzzy rules in M2,
-//! double-pinyin mode in M2, simplified/traditional (U) and v-mode (V) input
-//! modes in M4.
+//! Roadmap: trigram/beam-search decoding in M2 (P2), additional fuzzy rules
+//! with the same query-side pipeline, real double-pinyin scheme tables
+//! pending data import (see [`double_pinyin`]), simplified/traditional (U)
+//! and v-mode (V) input modes in M4.
 
 pub mod config;
 pub mod decoder;
 pub mod dict;
+pub mod double_pinyin;
 pub mod punct;
 pub mod segmenter;
 pub mod session;
+pub mod spelling;
 pub mod syllable;
 pub mod user_dict;
 pub mod user_dict_store;
 
-pub use config::{default_config, normalize_syllable, EngineConfig, FuzzyConfig, ShiftAction};
-pub use decoder::{candidates as decode_candidates, Candidate};
+pub use config::{
+    default_config, normalize_syllable, DoublePinyin, EngineConfig, FuzzyConfig, ShiftAction,
+};
+pub use decoder::{
+    candidates as decode_candidates, candidates_with as decode_candidates_with, Candidate,
+};
 pub use dict::Dictionary;
+pub use double_pinyin::{parse_tsv as dp_parse_table, to_full as dp_to_full, DpTable};
 pub use punct::{map as punct_map, new as new_punct, reset as punct_reset, PunctOut, PunctState};
 pub use segmenter::{best_segmentation, segmentations};
 pub use session::{
     candidates as session_candidates, current_page, new_session, new_session_with, next_page,
     normalized_key, page_count, preedit, prev_page, process_key, process_shift,
-    reset as reset_session, select_flat, toggle_ascii_punct, ProcessResult, Session,
+    reset as reset_session, select_flat, set_double_pinyin, toggle_ascii_punct, ProcessResult,
+    Session,
 };
+pub use spelling::{initials_prefix, key_variants, syllable_variants};
 pub use syllable::{is_syllable, SYLLABLES};
 pub use user_dict::{
     absorb as absorb_user, decay as decay_user, is_empty as user_dict_is_empty,

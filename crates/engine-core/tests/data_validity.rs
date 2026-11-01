@@ -2,12 +2,11 @@
 //! pinyin syllables and every entry list must be sorted by frequency.
 //! Guards against regressions when assets/core.tsv is edited or extended.
 
-use engine_core::config::FuzzyConfig;
 use engine_core::{is_syllable, Dictionary};
 
 #[test]
 fn builtin_keys_are_valid_syllable_sequences() {
-    let dict = Dictionary::builtin(&FuzzyConfig::default());
+    let dict = Dictionary::builtin();
     assert!(!dict.is_empty());
     let mut checked = 0usize;
     for (key, entries) in dict.iter() {
@@ -28,7 +27,7 @@ fn builtin_keys_are_valid_syllable_sequences() {
 
 #[test]
 fn builtin_entries_sorted_by_frequency() {
-    let dict = Dictionary::builtin(&FuzzyConfig::default());
+    let dict = Dictionary::builtin();
     for (key, entries) in dict.iter() {
         let freqs: Vec<u32> = entries.iter().map(|(_, f)| *f).collect();
         let mut sorted = freqs.clone();

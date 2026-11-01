@@ -70,9 +70,20 @@ P6=M4+/M5。
 ### P1（=M2a）拼式管线数据化
 
 - 模糊音从「烘焙进 key」改为**查询侧拼式变换管线**（`config.rs` →
-  `spelling.rs`，≤400 行）。
-- **简拼**：声母首字母成段，优先级低于全拼。
-- **双拼**映射表数据化（自然码/小鹤/微软）。
+  `spelling.rs`，≤400 行）。✅ 已落地：词典 key 只保留全拼规范形，
+  `decoder::candidates_with` 经 `key_variants` 逐变体探测、同词条取
+  最高频不叠加；`candidates` 旧签名保留为无模糊薄封装。
+- **简拼**：声母首字母成段，优先级低于全拼。✅ 已落地：
+  `dict` 内建首字母索引（`lookup_initials`）+ `spelling::initials_prefix`
+  判定，纯声母串（≥2 字母、无分隔符）在常规候选之后追加（每 key 1 条，
+  freq 降序）。
+- **双拼**映射表数据化（自然码/小鹤/微软）。✅ 框架已落地：
+  `double_pinyin.rs`（`DpTable` + `parse_tsv` + `to_full`，产出音节逐一
+  过 `syllable::is_syllable` 校验）+ `config::DoublePinyin` 开关 +
+  `session::set_double_pinyin`（解码用变换结果、preedit 仍显原串、学习
+  落在变换后 key）。⚠️ **数据缺口**：真实键位表（自然码/小鹤/微软）是
+  事实数据，网络不可用期间禁止凭记忆编造；待网络恢复后导入 `data/`，
+  经同一 `parse_tsv` 加载即可（宿主层负责装表）。
 - 依赖：P0。
 
 ### P2（=M2b）整句解码 + LM

@@ -1,8 +1,11 @@
-//! Engine configuration: fuzzy-pinyin flags and candidate-display settings.
+//! Engine configuration: fuzzy-pinyin flags, double-pinyin mode switch and
+//! candidate-display settings.
 
-/// Fuzzy-pinyin toggles. Each rule maps a "heavier" spelling onto a
-/// "lighter" one so that, for example, typing `li` can still match `ni`
-/// entries once the dictionary is built with [`FuzzyConfig`] applied.
+/// Fuzzy-pinyin toggles. Since P1 these rules are applied on the **query
+/// side** (see [`crate::spelling`]): the typed syllable is normalized with
+/// [`normalize_syllable`] and every equivalent spelling is probed against
+/// the canonical dictionary keys. Dictionary keys themselves never carry
+/// fuzzy transforms.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct FuzzyConfig {
     /// `zh` initial collapses to `z`.
@@ -23,6 +26,23 @@ pub struct FuzzyConfig {
     pub in_ing: bool,
 }
 
+/// Double-pinyin mode. `Off` keeps full-pinyin input; `Custom` decodes the
+/// typed letters through a host-loaded [`crate::double_pinyin::DpTable`]
+/// (see `session::set_double_pinyin`). There is deliberately no builtin
+/// scheme: the real key tables (自然码/小鹤/微软) are data files waiting to
+/// be imported into `data/` once network access is back, so a `Custom`
+/// session without a table simply decodes nothing extra (the raw letters
+/// are used as-is).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DoublePinyin {
+    /// Full pinyin: the typed letters are segmented as-is.
+    #[default]
+    Off,
+    /// Decode via the table installed on the session (fall back to the raw
+    /// letters when no table is installed or the transform fails).
+    Custom,
+}
+
 /// What Shift does to the un-committed preedit when switching from Chinese
 /// to English mode (see `session::process_shift`). Three configurable
 /// states: commit the raw buffer verbatim, commit the best candidate (raw
@@ -41,8 +61,12 @@ pub enum ShiftAction {
 /// Top-level engine settings.
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
-    /// Fuzzy rules baked into the dictionary at build time.
+    /// Fuzzy rules applied at query time by the spelling pipeline
+    /// (dictionary keys stay canonical).
     pub fuzzy: FuzzyConfig,
+    /// Double-pinyin mode; `Custom` needs a table on the session
+    /// (`session::set_double_pinyin`) to have any effect.
+    pub double_pinyin: DoublePinyin,
     /// Whether committing a candidate feeds the user dictionary.
     pub user_learning: bool,
     /// Candidate page size (used by frontends, not by core decoding).
@@ -62,6 +86,7 @@ impl Default for EngineConfig {
     fn default() -> Self {
         EngineConfig {
             fuzzy: FuzzyConfig::default(),
+            double_pinyin: DoublePinyin::Off,
             user_learning: true,
             page_size: 5,
             max_candidates: 10,
@@ -80,6 +105,9 @@ pub fn default_config() -> EngineConfig {
 /// initials first (`zh->z`, `ch->c`, `sh->s`, `l->n`, `h->f`), then finals
 /// (`ang->an`, `eng->en`, `ing->in`). Applied blindly, without checking that
 /// the input or the output is a real syllable; the transform is idempotent.
+/// Query-side use: [`crate::spelling::syllable_variants`] normalizes the
+/// typed syllable with this and then expands the equivalence class in both
+/// directions, so either spelling of a fuzzy pair matches the dictionary.
 pub fn normalize_syllable(fuzzy: &FuzzyConfig, s: &str) -> String {
     let mut out = s.to_string();
     if fuzzy.z_zh && out.starts_with("zh") {

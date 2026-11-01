@@ -1,14 +1,19 @@
 //! Static pinyin-to-hanzi dictionary.
 //!
-//! A [`Dictionary`] stores one map from a normalized pinyin key (syllables
-//! joined by `'`, each syllable fuzzy-normalized with the [`FuzzyConfig`]
-//! captured at build time) to `(hanzi, freq)` entries sorted by frequency
-//! descending, then hanzi ascending. Because the fuzzy rules are baked into
-//! the keys *and* [`Dictionary::lookup`] normalizes its query with the same
-//! remembered config, callers never need to apply fuzzy rules themselves.
+//! A [`Dictionary`] stores one map from a **canonical** pinyin key
+//! (syllables joined by `'`, lowercased, separators folded) to
+//! `(hanzi, freq)` entries sorted by frequency descending, then hanzi
+//! ascending. Since P1 no fuzzy rules are baked into the keys: fuzzy
+//! matching happens at query time in [`crate::spelling`]/[`crate::decoder`],
+//! which probe every spelling variant of the typed input against the
+//! canonical keys kept here.
+//!
+//! A secondary **initials index** (`BTreeMap<String, Vec<String>>`) maps the
+//! first letters of each syllable of a key (`ni'hao` -> `nh`, `xi'an` -> `xa`)
+//! to the keys sharing them, powering simplified-pinyin (简拼) lookups via
+//! [`Dictionary::lookup_initials`].
 
-use crate::config::{normalize_syllable, FuzzyConfig};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// Magic bytes at the start of every `.ior` file (matches dict-tools).
 const IOR_MAGIC: &[u8; 4] = b"IORD";
@@ -21,7 +26,7 @@ const IOR_VERSION_V2: u8 = 2;
 const IOR_VERSION_V1: u8 = 1;
 
 /// One raw `(pinyin, hanzi, freq)` triple as stored in a `.ior` buffer,
-/// before fuzzy key normalization.
+/// before canonical key normalization.
 struct RawEntry {
     pinyin: String,
     hanzi: String,
@@ -217,21 +222,26 @@ fn truncated(needed: usize, pos: usize, len: usize) -> String {
     format!("truncated data: need {needed} byte(s) at offset {pos}, buffer is {len} byte(s)")
 }
 
-/// Pinyin key -> `(hanzi, freq)` entries, freq desc / hanzi asc.
+/// Pinyin key -> `(hanzi, freq)` entries, freq desc / hanzi asc, plus the
+/// simplified-pinyin (initials) index over the same keys.
 #[derive(Debug, Clone)]
 pub struct Dictionary {
     entries: HashMap<String, Vec<(String, u32)>>,
-    fuzzy: FuzzyConfig,
+    /// First letters of every syllable (`ni'hao` -> `nh`) -> canonical keys
+    /// sharing them, each list deduped and lexicographically sorted.
+    initials: BTreeMap<String, Vec<String>>,
 }
 
 impl Dictionary {
     /// Parses TSV text: `pinyin<TAB>hanzi<TAB>freq` per line. The frequency
     /// field is optional (default 1). Blank lines and lines starting with
     /// `#` are skipped. Pinyin separators may be `'` or spaces (normalized
-    /// to `'`); everything is lowercased and each syllable is fuzzy-normalized
-    /// with `fuzzy`. Duplicate `(key, hanzi)` pairs have their frequencies
-    /// summed. Returns `Err` with the 1-based line number on malformed lines.
-    pub fn from_tsv_with(text: &str, fuzzy: &FuzzyConfig) -> Result<Dictionary, String> {
+    /// to `'`); everything is lowercased. Keys stay **canonical** — no fuzzy
+    /// rules are applied here (fuzzy matching is query-side, see
+    /// [`crate::spelling`]). Duplicate `(key, hanzi)` pairs have their
+    /// frequencies summed. Returns `Err` with the 1-based line number on
+    /// malformed lines.
+    pub fn from_tsv(text: &str) -> Result<Dictionary, String> {
         let mut entries: HashMap<String, Vec<(String, u32)>> = HashMap::new();
         for (idx, line) in text.lines().enumerate() {
             let lineno = idx + 1;
@@ -253,7 +263,7 @@ impl Dictionary {
                     "line {lineno}: expected 'pinyin\\thanzi[\\tfreq]', got '{trimmed}'"
                 ));
             }
-            let key = normalize_key(fuzzy, pinyin);
+            let key = normalize_key(pinyin);
             let vals = entries.entry(key).or_default();
             match vals.iter_mut().find(|(h, _)| h == hanzi) {
                 Some((_, f)) => *f += freq,
@@ -263,27 +273,24 @@ impl Dictionary {
         for vals in entries.values_mut() {
             sort_values(vals);
         }
-        Ok(Dictionary {
-            entries,
-            fuzzy: *fuzzy,
-        })
+        Ok(dictionary_from_parts(entries))
     }
 
     /// The builtin core dictionary (`assets/core.tsv`).
-    pub fn builtin(fuzzy: &FuzzyConfig) -> Dictionary {
-        Self::from_tsv_with(include_str!("../assets/core.tsv"), fuzzy)
+    pub fn builtin() -> Dictionary {
+        Self::from_tsv(include_str!("../assets/core.tsv"))
             .expect("builtin core.tsv must be well-formed")
     }
 
     /// Loads a `.ior` binary dictionary (v2 grouped layout or legacy v1
     /// flat layout, byte-identical to what `dict-tools` writes). Keys are
-    /// normalized exactly like [`Dictionary::from_tsv_with`] — lowercase,
-    /// separators folded to `'`, per-syllable fuzzy normalization, and
-    /// duplicate `(key, hanzi)` frequencies summed — so `.ior` and TSV
-    /// sources of the same data behave identically.
-    pub fn from_ior_bytes(bytes: &[u8], fuzzy: &FuzzyConfig) -> Result<Dictionary, String> {
+    /// normalized exactly like [`Dictionary::from_tsv`] — lowercase,
+    /// separators folded to `'`, no fuzzy rules — and duplicate
+    /// `(key, hanzi)` frequencies are summed, so `.ior` and TSV sources of
+    /// the same data behave identically.
+    pub fn from_ior_bytes(bytes: &[u8]) -> Result<Dictionary, String> {
         let raw = parse_ior(bytes)?;
-        Ok(dictionary_from_raw(raw, fuzzy))
+        Ok(dictionary_from_raw(raw))
     }
 
     /// Loads and overlays `.ior` layers in the given order (base first,
@@ -291,11 +298,11 @@ impl Dictionary {
     /// loading each layer with [`Dictionary::from_ior_bytes`] and
     /// [`Dictionary::merge`]-ing them in order: frequencies of identical
     /// `(key, hanzi)` pairs add up. An empty layer list yields an empty
-    /// dictionary; every layer must use the same `fuzzy` rules.
-    pub fn from_ior_layers(layers: &[&[u8]], fuzzy: &FuzzyConfig) -> Result<Dictionary, String> {
+    /// dictionary.
+    pub fn from_ior_layers(layers: &[&[u8]]) -> Result<Dictionary, String> {
         let mut combined: Option<Dictionary> = None;
         for bytes in layers {
-            let layer = Self::from_ior_bytes(bytes, fuzzy)?;
+            let layer = Self::from_ior_bytes(bytes)?;
             combined = match combined {
                 Some(mut acc) => {
                     acc.merge(&layer);
@@ -304,16 +311,33 @@ impl Dictionary {
                 None => Some(layer),
             };
         }
-        Ok(combined.unwrap_or_else(|| dictionary_from_raw(Vec::new(), fuzzy)))
+        Ok(combined.unwrap_or_else(|| dictionary_from_raw(Vec::new())))
     }
 
-    /// Looks up a joined key (`ni'hao`, `xian`, ...). The key is normalized
-    /// with the config remembered at build time before the actual map probe,
-    /// so both raw and pre-normalized keys work (normalization is idempotent).
+    /// Looks up a joined key (`ni'hao`, `xian`, ...) after folding it to
+    /// the canonical form (lowercase, separators collapsed), so both raw
+    /// and pre-normalized keys work. Fuzzy spellings are **not** matched
+    /// here: the caller expands them with [`crate::spelling::key_variants`].
     pub fn lookup(&self, key: &str) -> Option<&[(String, u32)]> {
-        self.entries
-            .get(&normalize_key(&self.fuzzy, key))
-            .map(|v| v.as_slice())
+        self.entries.get(&normalize_key(key)).map(|v| v.as_slice())
+    }
+
+    /// Simplified-pinyin (简拼) probe: up to `limit` canonical keys whose
+    /// initials string (`ni'hao` -> `nh`) starts with `prefix`, in key
+    /// lexicographic order. An empty prefix matches nothing.
+    pub fn lookup_initials(&self, prefix: &str, limit: usize) -> Vec<&str> {
+        if prefix.is_empty() || limit == 0 {
+            return Vec::new();
+        }
+        let end = format!("{prefix}\u{10FFFF}");
+        let mut keys: Vec<&str> = self
+            .initials
+            .range(prefix.to_string()..end)
+            .flat_map(|(_, keys)| keys.iter().map(String::as_str))
+            .collect();
+        keys.sort_unstable();
+        keys.truncate(limit);
+        keys
     }
 
     /// Number of distinct keys.
@@ -332,8 +356,7 @@ impl Dictionary {
     }
 
     /// Unions `other` into `self`, summing frequencies of identical
-    /// `(key, hanzi)` pairs and re-sorting. Assumes both dictionaries were
-    /// built with the same [`FuzzyConfig`] (fuzziness is part of the key).
+    /// `(key, hanzi)` pairs, re-sorting and rebuilding the initials index.
     pub fn merge(&mut self, other: &Dictionary) {
         for (key, vals) in other.entries.iter() {
             let entry = self.entries.entry(key.clone()).or_default();
@@ -345,6 +368,7 @@ impl Dictionary {
             }
             sort_values(entry);
         }
+        self.initials = build_initials_index(&self.entries);
     }
 }
 
@@ -354,11 +378,11 @@ fn sort_values(vals: &mut [(String, u32)]) {
 }
 
 /// Builds a dictionary from raw `.ior` triples: same key normalization and
-/// duplicate handling as `Dictionary::from_tsv_with`.
-fn dictionary_from_raw(raw: Vec<RawEntry>, fuzzy: &FuzzyConfig) -> Dictionary {
+/// duplicate handling as `Dictionary::from_tsv` (canonical keys, no fuzzy).
+fn dictionary_from_raw(raw: Vec<RawEntry>) -> Dictionary {
     let mut entries: HashMap<String, Vec<(String, u32)>> = HashMap::new();
     for record in raw {
-        let key = normalize_key(fuzzy, &record.pinyin);
+        let key = normalize_key(&record.pinyin);
         let vals = entries.entry(key).or_default();
         match vals.iter_mut().find(|(h, _)| *h == record.hanzi) {
             Some((_, freq)) => *freq = freq.saturating_add(record.freq),
@@ -368,19 +392,50 @@ fn dictionary_from_raw(raw: Vec<RawEntry>, fuzzy: &FuzzyConfig) -> Dictionary {
     for vals in entries.values_mut() {
         sort_values(vals);
     }
-    Dictionary {
-        entries,
-        fuzzy: *fuzzy,
-    }
+    dictionary_from_parts(entries)
 }
 
-/// Builds a dictionary key: lowercase, separators (`'` or space) normalized
-/// to `'`, each syllable fuzzy-normalized.
-fn normalize_key(fuzzy: &FuzzyConfig, key: &str) -> String {
+/// Wraps a filled entry map into a [`Dictionary`] with a fresh initials
+/// index (shared by the TSV and `.ior` loading paths).
+fn dictionary_from_parts(entries: HashMap<String, Vec<(String, u32)>>) -> Dictionary {
+    let initials = build_initials_index(&entries);
+    Dictionary { entries, initials }
+}
+
+/// First letter of every syllable of a canonical key: `ni'hao` -> `nh`,
+/// `xi'an` -> `xa`. Syllables are never empty after normalization.
+fn initials_of_key(key: &str) -> String {
+    key.split('\'')
+        .filter_map(|syl| syl.chars().next())
+        .collect()
+}
+
+/// Groups canonical keys by their initials string; each list is deduped
+/// and sorted lexicographically so `lookup_initials` is deterministic.
+fn build_initials_index(
+    entries: &HashMap<String, Vec<(String, u32)>>,
+) -> BTreeMap<String, Vec<String>> {
+    let mut index: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for key in entries.keys() {
+        index
+            .entry(initials_of_key(key))
+            .or_default()
+            .push(key.clone());
+    }
+    for keys in index.values_mut() {
+        keys.sort();
+        keys.dedup();
+    }
+    index
+}
+
+/// Builds a dictionary key in canonical form: lowercase, separators
+/// (`'` or space) normalized to `'`, empty segments dropped. No fuzzy
+/// rules are applied — that is query-side work ([`crate::spelling`]).
+fn normalize_key(key: &str) -> String {
     key.to_lowercase()
         .split(['\'', ' '])
         .filter(|syl| !syl.is_empty())
-        .map(|syl| normalize_syllable(fuzzy, syl))
         .collect::<Vec<_>>()
         .join("'")
 }
@@ -389,13 +444,9 @@ fn normalize_key(fuzzy: &FuzzyConfig, key: &str) -> String {
 mod tests {
     use super::*;
 
-    fn default_fuzzy() -> FuzzyConfig {
-        FuzzyConfig::default()
-    }
-
     #[test]
     fn parses_basic_entries() {
-        let d = Dictionary::from_tsv_with("ni\t你\t9\nni\t尼\t1\n", &default_fuzzy()).unwrap();
+        let d = Dictionary::from_tsv("ni\t你\t9\nni\t尼\t1\n").unwrap();
         let vals = d.lookup("ni").unwrap();
         assert_eq!(&vals[0], &("你".to_string(), 9));
         assert_eq!(&vals[1], &("尼".to_string(), 1));
@@ -405,23 +456,22 @@ mod tests {
 
     #[test]
     fn missing_tab_is_an_error_with_line_number() {
-        let err = Dictionary::from_tsv_with("niyou\n", &default_fuzzy()).unwrap_err();
+        let err = Dictionary::from_tsv("niyou\n").unwrap_err();
         assert!(err.contains("line 1"), "unexpected error: {err}");
-        let err =
-            Dictionary::from_tsv_with("ni\t你\nbroken line here\n", &default_fuzzy()).unwrap_err();
+        let err = Dictionary::from_tsv("ni\t你\nbroken line here\n").unwrap_err();
         assert!(err.contains("line 2"), "unexpected error: {err}");
     }
 
     #[test]
     fn invalid_freq_is_an_error() {
-        let err = Dictionary::from_tsv_with("ni\t你\tx\n", &default_fuzzy()).unwrap_err();
+        let err = Dictionary::from_tsv("ni\t你\tx\n").unwrap_err();
         assert!(err.contains("line 1"), "unexpected error: {err}");
     }
 
     #[test]
     fn comments_and_blanks_skipped_freq_defaults_to_one() {
         let text = "# comment\n\n   \nni\t你\n";
-        let d = Dictionary::from_tsv_with(text, &default_fuzzy()).unwrap();
+        let d = Dictionary::from_tsv(text).unwrap();
         assert_eq!(d.len(), 1);
         assert_eq!(&d.lookup("ni").unwrap()[0], &("你".to_string(), 1));
     }
@@ -429,14 +479,14 @@ mod tests {
     #[test]
     fn space_separator_accepted_and_duplicates_summed() {
         let text = "ni hao\t你好\t5\nni hao\t你好\t3\nNI HAO\t你好\t2\n";
-        let d = Dictionary::from_tsv_with(text, &default_fuzzy()).unwrap();
+        let d = Dictionary::from_tsv(text).unwrap();
         assert_eq!(&d.lookup("ni'hao").unwrap()[0], &("你好".to_string(), 10));
     }
 
     #[test]
     fn values_sorted_freq_desc_then_hanzi_asc() {
         let text = "a\t甲\t5\na\t乙\t9\na\t丙\t9\n";
-        let d = Dictionary::from_tsv_with(text, &default_fuzzy()).unwrap();
+        let d = Dictionary::from_tsv(text).unwrap();
         let vals = d.lookup("a").unwrap();
         assert_eq!(vals[0].0, "丙");
         assert_eq!(vals[1].0, "乙");
@@ -446,32 +496,59 @@ mod tests {
 
     #[test]
     fn lookup_miss_returns_none() {
-        let d = Dictionary::from_tsv_with("ni\t你\n", &default_fuzzy()).unwrap();
+        let d = Dictionary::from_tsv("ni\t你\n").unwrap();
         assert!(d.lookup("xyz").is_none());
         assert!(d.lookup("").is_none());
         assert!(d.lookup("ni'hao").is_none());
     }
 
     #[test]
-    fn fuzzy_keys_and_lookup_agree() {
-        let f = FuzzyConfig {
-            n_l: true,
-            ..FuzzyConfig::default()
-        };
-        let d = Dictionary::from_tsv_with("li\t里\t5\nni\t你\t9\n", &f).unwrap();
-        // both stored under the normalized key, reachable from either spelling
-        let vals = d.lookup("li").unwrap();
-        assert_eq!(vals[0].0, "你");
-        assert_eq!(vals[1].0, "里");
-        let vals = d.lookup("ni").unwrap();
-        assert_eq!(vals.len(), 2);
+    fn keys_stay_canonical_fuzzy_is_query_side() {
+        // P1: the dictionary keeps one key per spelling; fuzzy expansion is
+        // done by `spelling::key_variants` at lookup time (decoder probes
+        // every variant), not by merging keys at build time.
+        let d = Dictionary::from_tsv("li\t里\t5\nni\t你\t9\n").unwrap();
+        assert_eq!(d.len(), 2, "li and ni must stay distinct keys");
+        assert_eq!(d.lookup("li").unwrap(), [("里".to_string(), 5)]);
+        assert_eq!(d.lookup("ni").unwrap(), [("你".to_string(), 9)]);
+    }
+
+    #[test]
+    fn initials_index_groups_canonical_keys() {
+        let d =
+            Dictionary::from_tsv("ni'hao\t你好\t5\nxi'an\t西安\t4\njin'tian\t今天\t3\n").unwrap();
+        assert_eq!(d.lookup_initials("nh", 10), vec!["ni'hao"]);
+        assert_eq!(d.lookup_initials("xa", 10), vec!["xi'an"]);
+        assert_eq!(d.lookup_initials("jt", 10), vec!["jin'tian"]);
+    }
+
+    #[test]
+    fn lookup_initials_prefix_range_and_limit() {
+        let text = "ni'hao\t你好\t5\nni'men\t你们\t4\njin'tian\t今天\t3\n";
+        let d = Dictionary::from_tsv(text).unwrap();
+        // prefix "n" sees every key whose initials start with n, sorted by key
+        assert_eq!(d.lookup_initials("n", 10), vec!["ni'hao", "ni'men"]);
+        assert_eq!(d.lookup_initials("n", 1), vec!["ni'hao"]);
+        assert!(d.lookup_initials("n", 0).is_empty());
+        // no match, empty prefix and empty result set
+        assert!(d.lookup_initials("z", 10).is_empty());
+        assert!(d.lookup_initials("", 10).is_empty());
+    }
+
+    #[test]
+    fn merge_rebuilds_the_initials_index() {
+        let mut a = Dictionary::from_tsv("ni'hao\t你好\t5\n").unwrap();
+        assert!(a.lookup_initials("nm", 10).is_empty());
+        let b = Dictionary::from_tsv("ni'men\t你们\t4\n").unwrap();
+        a.merge(&b);
+        assert_eq!(a.lookup_initials("nm", 10), vec!["ni'men"]);
+        assert_eq!(a.lookup_initials("nh", 10), vec!["ni'hao"]);
     }
 
     #[test]
     fn merge_sums_and_preserves_missing() {
-        let a = Dictionary::from_tsv_with("ni\t你\t5\nshi\t是\t7\n", &default_fuzzy()).unwrap();
-        let b = Dictionary::from_tsv_with("ni\t你\t3\nni\t尼\t1\nhao\t好\t2\n", &default_fuzzy())
-            .unwrap();
+        let a = Dictionary::from_tsv("ni\t你\t5\nshi\t是\t7\n").unwrap();
+        let b = Dictionary::from_tsv("ni\t你\t3\nni\t尼\t1\nhao\t好\t2\n").unwrap();
         let mut a = a;
         a.merge(&b);
         let ni = a.lookup("ni").unwrap();
@@ -484,7 +561,7 @@ mod tests {
 
     #[test]
     fn builtin_loads_and_answers_core_queries() {
-        let d = Dictionary::builtin(&default_fuzzy());
+        let d = Dictionary::builtin();
         assert!(d.len() >= 60);
         assert_eq!(d.lookup("ni'hao").unwrap()[0].0, "你好");
         assert!(d.lookup("xian").unwrap().iter().any(|(h, _)| h == "先"));
@@ -549,7 +626,7 @@ mod tests {
     #[test]
     fn from_ior_bytes_v2_groups_values_and_sorts() {
         let bytes = v2_bytes(&[("ni", &[("你", 9u32), ("尼", 1)]), ("hao", &[("好", 4)])]);
-        let d = Dictionary::from_ior_bytes(&bytes, &default_fuzzy()).unwrap();
+        let d = Dictionary::from_ior_bytes(&bytes).unwrap();
         assert_eq!(d.len(), 2);
         let ni = d.lookup("ni").unwrap();
         assert_eq!(&ni[0], &("你".to_string(), 9));
@@ -560,7 +637,7 @@ mod tests {
     #[test]
     fn from_ior_bytes_reads_legacy_v1() {
         let bytes = v1_bytes(&[("ni", "你", 9), ("ni", "尼", 1), ("hao", "好", 4)]);
-        let d = Dictionary::from_ior_bytes(&bytes, &default_fuzzy()).unwrap();
+        let d = Dictionary::from_ior_bytes(&bytes).unwrap();
         assert_eq!(d.len(), 2);
         assert_eq!(d.lookup("ni").unwrap().len(), 2);
         assert_eq!(&d.lookup("ni").unwrap()[0], &("你".to_string(), 9));
@@ -570,7 +647,7 @@ mod tests {
     fn from_ior_bytes_sums_duplicate_pairs_inside_a_key() {
         // A crafted v2 file can repeat a hanzi under one key; freq adds up.
         let bytes = v2_bytes(&[("ni", &[("你", 5), ("你", 3)])]);
-        let d = Dictionary::from_ior_bytes(&bytes, &default_fuzzy()).unwrap();
+        let d = Dictionary::from_ior_bytes(&bytes).unwrap();
         assert_eq!(d.lookup("ni").unwrap(), &[("你".to_string(), 8)]);
     }
 
@@ -579,44 +656,40 @@ mod tests {
         let good = v2_bytes(&[("ni", &[("你", 9)])]);
         let mut bad_magic = good.clone();
         bad_magic[0] = b'X';
-        assert!(Dictionary::from_ior_bytes(&bad_magic, &default_fuzzy())
+        assert!(Dictionary::from_ior_bytes(&bad_magic)
             .unwrap_err()
             .contains("magic"));
         let mut bad_version = good.clone();
         bad_version[4] = 7;
-        assert!(Dictionary::from_ior_bytes(&bad_version, &default_fuzzy())
+        assert!(Dictionary::from_ior_bytes(&bad_version)
             .unwrap_err()
             .contains("unsupported version"));
         let mut count_mismatch = good;
         count_mismatch[5..9].copy_from_slice(&9u32.to_le_bytes());
-        assert!(
-            Dictionary::from_ior_bytes(&count_mismatch, &default_fuzzy())
-                .unwrap_err()
-                .contains("mismatch")
-        );
+        assert!(Dictionary::from_ior_bytes(&count_mismatch)
+            .unwrap_err()
+            .contains("mismatch"));
         let mut truncated = v2_bytes(&[("ni", &[("你", 9)]), ("hao", &[("好", 4)])]);
         truncated.truncate(truncated.len() - 3);
-        assert!(Dictionary::from_ior_bytes(&truncated, &default_fuzzy()).is_err());
+        assert!(Dictionary::from_ior_bytes(&truncated).is_err());
         let mut trailing = v2_bytes(&[("ni", &[("你", 9)])]);
         trailing.push(0);
-        assert!(Dictionary::from_ior_bytes(&trailing, &default_fuzzy())
+        assert!(Dictionary::from_ior_bytes(&trailing)
             .unwrap_err()
             .contains("trailing"));
     }
 
     #[test]
-    fn from_ior_bytes_applies_fuzzy_like_from_tsv() {
-        let fuzzy = FuzzyConfig {
-            n_l: true,
-            ..FuzzyConfig::default()
-        };
+    fn from_ior_bytes_keeps_canonical_keys_like_from_tsv() {
+        // P1: `.ior` loading no longer applies fuzzy rules either; the same
+        // bytes and the same TSV text produce the same canonical dictionary.
         let bytes = v2_bytes(&[("li", &[("里", 5)]), ("ni", &[("你", 9)])]);
-        let d = Dictionary::from_ior_bytes(&bytes, &fuzzy).unwrap();
-        let tsv = Dictionary::from_tsv_with("li\t里\t5\nni\t你\t9\n", &fuzzy).unwrap();
-        // both spellings collapse onto the same normalized key
+        let d = Dictionary::from_ior_bytes(&bytes).unwrap();
+        let tsv = Dictionary::from_tsv("li\t里\t5\nni\t你\t9\n").unwrap();
+        assert_eq!(d.len(), tsv.len());
         assert_eq!(d.lookup("li").unwrap(), tsv.lookup("li").unwrap());
-        assert_eq!(d.lookup("ni").unwrap().len(), 2);
-        assert_eq!(d.lookup("li").unwrap().len(), 2);
+        assert_eq!(d.lookup("ni").unwrap(), tsv.lookup("ni").unwrap());
+        assert_eq!(d.lookup("ni").unwrap().len(), 1);
     }
 
     #[test]
@@ -624,7 +697,7 @@ mod tests {
         let base = v2_bytes(&[("ni", &[("你", 5)]), ("shi", &[("是", 7)])]);
         let domain = v2_bytes(&[("ni", &[("你", 3), ("尼", 1)])]);
         let user = v2_bytes(&[("hao", &[("好", 2)])]);
-        let d = Dictionary::from_ior_layers(&[&base, &domain, &user], &default_fuzzy()).unwrap();
+        let d = Dictionary::from_ior_layers(&[&base, &domain, &user]).unwrap();
         let ni = d.lookup("ni").unwrap();
         assert_eq!(&ni[0], &("你".to_string(), 8)); // 5 + 3 across layers
         assert_eq!(&ni[1], &("尼".to_string(), 1));
@@ -635,9 +708,9 @@ mod tests {
 
     #[test]
     fn from_ior_layers_accepts_empty_and_propagates_errors() {
-        let empty = Dictionary::from_ior_layers(&[], &default_fuzzy()).unwrap();
+        let empty = Dictionary::from_ior_layers(&[]).unwrap();
         assert!(empty.is_empty());
         let bad = vec![b"IORX".as_slice()];
-        assert!(Dictionary::from_ior_layers(&bad, &default_fuzzy()).is_err());
+        assert!(Dictionary::from_ior_layers(&bad).is_err());
     }
 }

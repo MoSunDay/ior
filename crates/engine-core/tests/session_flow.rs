@@ -1,7 +1,7 @@
 //! End-to-end M0 session flows: typing, preedit, candidate selection,
 //! passthrough, fuzzy matching, learning and crash-resistance.
 
-use engine_core::config::{default_config, EngineConfig, FuzzyConfig};
+use engine_core::config::{default_config, EngineConfig};
 use engine_core::dict::Dictionary;
 use engine_core::session::{
     self, new_session, new_session_with, preedit, process_key, ProcessResult,
@@ -162,8 +162,7 @@ fn commits_are_learned_and_manual_learning_surfaces() {
 
 #[test]
 fn custom_dictionary_session_works() {
-    let dict = Dictionary::from_tsv_with("ma\t妈\t5\nma\t马\t3\n", &FuzzyConfig::default())
-        .expect("inline tsv");
+    let dict = Dictionary::from_tsv("ma\t妈\t5\nma\t马\t3\n").expect("inline tsv");
     let cfg = EngineConfig::default();
     let mut s = new_session_with(cfg, dict);
     assert_eq!(process_key(&mut s, 'm'), ProcessResult::Editing);

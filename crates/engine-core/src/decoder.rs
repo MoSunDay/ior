@@ -1,6 +1,7 @@
-//! Candidate decoding for M0: segmentation -> dictionary lookup -> dedupe.
+//! Candidate decoding: spelling pipeline -> segmentation -> lookup -> dedupe.
 //!
-//! This is the deliberately simple M0 decoder:
+//! The assembly (unchanged shape since M0, now fed by the P1 spelling
+//! pipeline):
 //!  1. split the raw input on `'` and enumerate segmentations of each run
 //!     (fewest syllables first, then lexicographic);
 //!  2. user-dict hits for the best segmentation come first (their frequency
@@ -10,15 +11,22 @@
 //!  4. a composed candidate is built from the top single-syllable entry of
 //!     each segment of the best segmentation;
 //!  5. single-syllable inputs need no extra handling: step 3 already appends
-//!     every (non-top included) dictionary entry for that syllable.
+//!     every (non-top included) dictionary entry for that syllable;
+//!  6. 简拼 candidates (pure initial-letter input) are appended after all
+//!     full-pinyin ones, at most one per matching key.
 //!
-//! No fuzzy rules are applied here: fuzziness is baked into the dictionary
-//! keys at build time, and [`Dictionary::lookup`] normalizes queries with the
-//! config remembered by that dictionary. M2 replaces this module with a
-//! trigram language model plus beam search.
+//! Fuzzy matching is **query-side** since P1: dictionary keys are canonical,
+//! and every segmentation key is expanded with
+//! [`spelling::key_variants`] before probing the dictionary or the user
+//! dictionary. Hits found through several variants are merged — the same
+//! hanzi keeps its highest frequency, never a sum. M2 (P2) replaces the
+//! assembly with a trigram language model plus beam search over the same
+//! variant sets.
 
+use crate::config::FuzzyConfig;
 use crate::dict::Dictionary;
 use crate::segmenter::segmentations;
+use crate::spelling;
 use crate::user_dict::{self, UserDict};
 use std::collections::HashSet;
 
@@ -28,6 +36,14 @@ pub const USER_BOOST: u32 = 10_000;
 
 /// Guard for multi-run inputs: cap on enumerated segmentation combinations.
 const MAX_COMBOS: usize = 4096;
+
+/// Cap on the whole-key spelling-variant expansion ([`spelling::key_variants`]).
+const VARIANT_CAP: usize = 64;
+
+/// How many keys the 简拼 probe may fetch from the dictionary's initials
+/// index; one candidate is shown per key so short spellings never flood
+/// the list.
+const INITIALS_KEY_LIMIT: usize = 32;
 
 /// One candidate: the hanzi text plus the pinyin key it was produced from
 /// (syllables joined with `'`, as segmented from the typed letters).
@@ -39,64 +55,144 @@ pub struct Candidate {
     pub pinyin: String,
 }
 
-/// Produces up to `limit` candidates for the raw (typed) input `raw`,
-/// which may contain `'` separators between syllable runs. Returns an empty
-/// `Vec` when the input (or any `'`-separated run of it) cannot be segmented
-/// into syllables.
+/// Produces up to `limit` candidates for the raw (typed) input `raw` with
+/// the default (empty) fuzzy configuration. Kept as the compatibility entry
+/// point; see [`candidates_with`].
 pub fn candidates(
     dict: &Dictionary,
     user: Option<&UserDict>,
     raw: &str,
     limit: usize,
 ) -> Vec<Candidate> {
+    candidates_with(dict, user, &FuzzyConfig::default(), raw, limit)
+}
+
+/// Produces up to `limit` candidates for the raw (typed) input `raw`,
+/// which may contain `'` separators between syllable runs, expanding every
+/// segmentation key through the spelling pipeline configured by `fuzzy`.
+/// Full-pinyin candidates come first (user-learned entries boosted ahead of
+/// dictionary hits); 简拼 candidates are appended when `raw` is a pure
+/// initial-letter run. Returns an empty `Vec` when nothing matches.
+pub fn candidates_with(
+    dict: &Dictionary,
+    user: Option<&UserDict>,
+    fuzzy: &FuzzyConfig,
+    raw: &str,
+    limit: usize,
+) -> Vec<Candidate> {
     if limit == 0 {
-        return Vec::new();
-    }
-    let combos = segmentation_combos(raw);
-    if combos.is_empty() {
         return Vec::new();
     }
     let mut out: Vec<Candidate> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
-    let best_key = combos[0].join("'");
+    let combos = segmentation_combos(raw);
 
-    // (a) user-learned entries for the best segmentation, boosted by
-    // USER_BOOST: they are pushed first, so they always precede static hits.
-    if let Some(u) = user {
-        for (hanzi, _freq) in user_dict::lookup(u, &best_key) {
-            push_unique(&mut out, &mut seen, hanzi, best_key.clone(), limit);
-        }
-    }
+    if !combos.is_empty() {
+        let best_key = combos[0].join("'");
 
-    // (b) whole-phrase matches, one segmentation at a time.
-    for combo in &combos {
-        let key = combo.join("'");
-        if let Some(entries) = dict.lookup(&key) {
-            for (hanzi, _freq) in entries {
-                push_unique(&mut out, &mut seen, hanzi.clone(), key.clone(), limit);
+        // (a) user-learned entries for the best segmentation, boosted by
+        // USER_BOOST: they are pushed first, so they always precede static
+        // hits. Probed over spelling variants, merged by highest frequency.
+        if let Some(u) = user {
+            for (hanzi, _freq) in user_lookup_variants(u, fuzzy, &best_key) {
+                push_unique(&mut out, &mut seen, hanzi, best_key.clone(), limit);
             }
         }
-        if out.len() >= limit {
-            return out;
+
+        // (b) whole-phrase matches, one segmentation at a time, each key
+        // probed over its spelling variants.
+        for combo in &combos {
+            let key = combo.join("'");
+            for (hanzi, _freq) in dict_lookup_variants(dict, fuzzy, &key) {
+                push_unique(&mut out, &mut seen, hanzi, key.clone(), limit);
+            }
+            if out.len() >= limit {
+                return out;
+            }
+        }
+
+        // (c) composed candidate: top hanzi per segment of the best
+        // segmentation (first spelling variant that has an entry).
+        let mut composed = String::new();
+        let mut complete = true;
+        for seg in &combos[0] {
+            match top_hanzi_any_variant(dict, fuzzy, seg) {
+                Some(hanzi) => composed.push_str(&hanzi),
+                None => {
+                    complete = false;
+                    break;
+                }
+            }
+        }
+        if complete {
+            push_unique(&mut out, &mut seen, composed, best_key, limit);
         }
     }
 
-    // (c) composed candidate: top hanzi per segment of the best segmentation.
-    let mut composed = String::new();
-    let mut complete = true;
-    for seg in &combos[0] {
-        match dict.lookup(seg).and_then(|vals| vals.first()) {
-            Some((hanzi, _)) => composed.push_str(hanzi),
-            None => {
-                complete = false;
-                break;
+    // (d) 简拼 candidates: pure initial-letter input, appended after every
+    // full-pinyin candidate, at most one per matching key (freq desc).
+    if let Some(prefix) = spelling::initials_prefix(raw) {
+        let mut picks: Vec<(u32, String, String)> = Vec::new();
+        for key in dict.lookup_initials(&prefix, INITIALS_KEY_LIMIT) {
+            if let Some((hanzi, freq)) = dict.lookup(key).and_then(|vals| vals.first()) {
+                picks.push((*freq, hanzi.clone(), key.to_string()));
             }
         }
-    }
-    if complete {
-        push_unique(&mut out, &mut seen, composed, best_key, limit);
+        picks.sort_by(|a, b| {
+            b.0.cmp(&a.0)
+                .then_with(|| a.1.cmp(&b.1))
+                .then_with(|| a.2.cmp(&b.2))
+        });
+        for (_freq, hanzi, key) in picks {
+            push_unique(&mut out, &mut seen, hanzi, key, limit);
+        }
     }
     out
+}
+
+/// Probes every spelling variant of `key` in the dictionary and merges the
+/// hits: the same hanzi keeps its **highest** frequency across variants
+/// (frequencies are never summed across spellings), the result re-sorted
+/// freq descending / hanzi ascending.
+fn dict_lookup_variants(dict: &Dictionary, fuzzy: &FuzzyConfig, key: &str) -> Vec<(String, u32)> {
+    let mut merged: Vec<(String, u32)> = Vec::new();
+    for variant in spelling::key_variants(fuzzy, key, VARIANT_CAP) {
+        if let Some(entries) = dict.lookup(&variant) {
+            for (hanzi, freq) in entries {
+                match merged.iter_mut().find(|(h, _)| h == hanzi) {
+                    Some((_, best)) => *best = (*best).max(*freq),
+                    None => merged.push((hanzi.clone(), *freq)),
+                }
+            }
+        }
+    }
+    merged.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    merged
+}
+
+/// Same variant probing and max-frequency merge for user-dict entries.
+fn user_lookup_variants(user: &UserDict, fuzzy: &FuzzyConfig, key: &str) -> Vec<(String, u32)> {
+    let mut merged: Vec<(String, u32)> = Vec::new();
+    for variant in spelling::key_variants(fuzzy, key, VARIANT_CAP) {
+        for (hanzi, freq) in user_dict::lookup(user, &variant) {
+            match merged.iter_mut().find(|(h, _)| *h == hanzi) {
+                Some((_, best)) => *best = (*best).max(freq),
+                None => merged.push((hanzi, freq)),
+            }
+        }
+    }
+    merged.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    merged
+}
+
+/// Top hanzi of the first spelling variant of `syl` that has an entry.
+fn top_hanzi_any_variant(dict: &Dictionary, fuzzy: &FuzzyConfig, syl: &str) -> Option<String> {
+    for variant in spelling::syllable_variants(fuzzy, syl) {
+        if let Some((hanzi, _)) = dict.lookup(&variant).and_then(|vals| vals.first()) {
+            return Some(hanzi.clone());
+        }
+    }
+    None
 }
 
 /// All segmentation combinations of the `'`-separated runs of `raw`, ordered
@@ -152,7 +248,7 @@ mod tests {
 
     #[test]
     fn top_phrase_match_wins() {
-        let d = Dictionary::builtin(&FuzzyConfig::default());
+        let d = Dictionary::builtin();
         let cands = candidates(&d, None, "nihao", 10);
         assert_eq!(cands[0].text, "你好");
         assert_eq!(cands[0].pinyin, "ni'hao");
@@ -161,7 +257,7 @@ mod tests {
 
     #[test]
     fn xian_mixes_whole_and_split_matches() {
-        let d = Dictionary::builtin(&FuzzyConfig::default());
+        let d = Dictionary::builtin();
         let cands = candidates(&d, None, "xian", 10);
         let texts: Vec<&str> = cands.iter().map(|c| c.text.as_str()).collect();
         assert!(texts.contains(&"现"));
@@ -173,7 +269,7 @@ mod tests {
 
     #[test]
     fn unsegmentable_input_yields_nothing() {
-        let d = Dictionary::builtin(&FuzzyConfig::default());
+        let d = Dictionary::builtin();
         assert!(candidates(&d, None, "nih", 10).is_empty());
         assert!(candidates(&d, None, "", 10).is_empty());
         assert!(candidates(&d, None, "ni'zh", 10).is_empty());
@@ -181,7 +277,7 @@ mod tests {
 
     #[test]
     fn limit_is_respected() {
-        let d = Dictionary::builtin(&FuzzyConfig::default());
+        let d = Dictionary::builtin();
         assert_eq!(candidates(&d, None, "shi", 1).len(), 1);
         assert!(candidates(&d, None, "shi", 0).is_empty());
         assert!(candidates(&d, None, "shi", 10).len() > 1);
@@ -189,7 +285,7 @@ mod tests {
 
     #[test]
     fn user_entries_come_first_and_boost_wins() {
-        let d = Dictionary::builtin(&FuzzyConfig::default());
+        let d = Dictionary::builtin();
         let mut u = user_dict::new();
         user_dict::learn(&mut u, "ni'hao", "泥嚎");
         let cands = candidates(&d, Some(&u), "nihao", 10);
@@ -199,11 +295,147 @@ mod tests {
 
     #[test]
     fn composed_candidate_from_best_segmentation() {
-        let d = Dictionary::builtin(&FuzzyConfig::default());
+        let d = Dictionary::builtin();
         // "wo'de" has no phrase entry in core.tsv, but both syllables do, so
         // the composed candidate is built from the top entry of each segment.
         let cands = candidates(&d, None, "wo'de", 10);
         let texts: Vec<&str> = cands.iter().map(|c| c.text.as_str()).collect();
         assert!(texts.contains(&"我的"), "texts: {texts:?}");
+    }
+
+    // ---- P1: query-side fuzzy expansion --------------------------------
+
+    #[test]
+    fn fuzzy_input_hits_both_spellings() {
+        let d = Dictionary::from_tsv("li\t里\t5000\nni\t你\t9000\n").unwrap();
+        let f = FuzzyConfig {
+            n_l: true,
+            ..FuzzyConfig::default()
+        };
+        // typing "li" matches both the li and the ni entries
+        let cands = candidates_with(&d, None, &f, "li", 10);
+        let texts: Vec<&str> = cands.iter().map(|c| c.text.as_str()).collect();
+        assert_eq!(texts, vec!["你", "里"], "texts: {texts:?}");
+        // and typing "ni" reaches exactly the same set
+        let cands = candidates_with(&d, None, &f, "ni", 10);
+        let texts: Vec<&str> = cands.iter().map(|c| c.text.as_str()).collect();
+        assert_eq!(texts, vec!["你", "里"], "texts: {texts:?}");
+    }
+
+    #[test]
+    fn fuzzy_hits_keep_their_own_frequency_not_a_sum() {
+        // 里 freq 5000 reached via variant "li", 你 freq 9000 via variant
+        // "ni": the merged order uses each hanzi's own best frequency and
+        // never adds them up across spellings.
+        let d = Dictionary::from_tsv("li\t里\t5000\nni\t你\t9000\n").unwrap();
+        let f = FuzzyConfig {
+            n_l: true,
+            ..FuzzyConfig::default()
+        };
+        let cands = candidates_with(&d, None, &f, "li", 10);
+        assert_eq!(cands[0].text, "你");
+        assert_eq!(cands[1].text, "里");
+    }
+
+    #[test]
+    fn fuzzy_phrase_probe_uses_key_variants() {
+        let d = Dictionary::from_tsv("zhi'dao\t知道\t10\nzi'dao\t字典\t9\n").unwrap();
+        let f = FuzzyConfig {
+            z_zh: true,
+            ..FuzzyConfig::default()
+        };
+        // typing "zi'dao" expands to {zi,zhi}'dao and finds both phrases
+        let cands = candidates_with(&d, None, &f, "zi'dao", 10);
+        let texts: Vec<&str> = cands.iter().map(|c| c.text.as_str()).collect();
+        assert!(
+            texts.contains(&"知道") && texts.contains(&"字典"),
+            "texts: {texts:?}"
+        );
+        assert_eq!(cands[0].text, "知道", "freq desc across variants");
+        // without the rule nothing extra is probed
+        let cands = candidates_with(&d, None, &FuzzyConfig::default(), "zi'dao", 10);
+        assert_eq!(cands.len(), 1);
+        assert_eq!(cands[0].text, "字典");
+    }
+
+    #[test]
+    fn fuzzy_user_entries_are_probed_over_variants() {
+        let d = Dictionary::from_tsv("ni'hao\t你好\t100\n").unwrap();
+        let mut u = user_dict::new();
+        user_dict::learn(&mut u, "li'hao", "理号");
+        let f = FuzzyConfig {
+            n_l: true,
+            ..FuzzyConfig::default()
+        };
+        // typing "ni'hao" finds the user entry learned under "li'hao"
+        let cands = candidates_with(&d, Some(&u), &f, "ni'hao", 10);
+        assert_eq!(cands[0].text, "理号", "user entries still come first");
+        assert!(cands.iter().any(|c| c.text == "你好"));
+    }
+
+    #[test]
+    fn candidates_wrapper_uses_no_fuzzy_rules() {
+        let d = Dictionary::from_tsv("li\t里\t5000\nni\t你\t9000\n").unwrap();
+        // the compatibility wrapper behaves exactly like an off config
+        let cands = candidates(&d, None, "li", 10);
+        let texts: Vec<&str> = cands.iter().map(|c| c.text.as_str()).collect();
+        assert_eq!(texts, vec!["里"]);
+    }
+
+    // ---- P1: 简拼 (initials) candidates ---------------------------------
+
+    #[test]
+    fn initials_input_matches_keys_by_first_letters() {
+        let d = Dictionary::from_tsv("jin'tian\t今天\t4500\njin\t进\t100\n").unwrap();
+        let cands = candidates_with(&d, None, &FuzzyConfig::default(), "jt", 10);
+        assert_eq!(cands.len(), 1, "one candidate per key: {cands:?}");
+        assert_eq!(cands[0].text, "今天");
+        assert_eq!(cands[0].pinyin, "jin'tian", "pinyin carries the full key");
+    }
+
+    #[test]
+    fn initials_candidates_are_appended_not_substituted() {
+        // A pure initial run can never segment into full syllables (no
+        // syllable consists of initial letters only), so 简拼 picks are by
+        // construction the only — and therefore trailing — candidates.
+        // This pins that contract plus the freq-desc order among them.
+        let d = Dictionary::from_tsv("na\t拿\t100\nni'hao\t你好\t50\nni'men\t你们\t900\n").unwrap();
+        let cands = candidates_with(&d, None, &FuzzyConfig::default(), "nh", 10);
+        let texts: Vec<&str> = cands.iter().map(|c| c.text.as_str()).collect();
+        // "nh" prefixes the initials of ni'hao only (ni'men is "nm");
+        // the 拿 entry (initials "n") does not match the prefix.
+        assert_eq!(texts, vec!["你好"]);
+        assert_eq!(cands[0].pinyin, "ni'hao");
+    }
+
+    #[test]
+    fn initials_candidates_respect_the_limit() {
+        let d = Dictionary::from_tsv("ni'hao\t你好\t50\nni'men\t你们\t900\n").unwrap();
+        assert_eq!(
+            candidates_with(&d, None, &FuzzyConfig::default(), "nm", 1).len(),
+            1
+        );
+        assert!(candidates_with(&d, None, &FuzzyConfig::default(), "nm", 0).is_empty());
+    }
+
+    #[test]
+    fn initials_needs_a_pure_initial_letter_run() {
+        let d = Dictionary::builtin();
+        // "ni" is a full syllable (i is not an initial letter): no 简拼 path,
+        // and the full-pinyin path is untouched
+        let cands = candidates_with(&d, None, &FuzzyConfig::default(), "ni", 10);
+        assert_eq!(cands[0].text, "你");
+        // separators disqualify 简拼 even when both runs are initials
+        assert!(candidates_with(&d, None, &FuzzyConfig::default(), "n'h", 10).is_empty());
+        // single letter is not 简拼 either
+        assert!(candidates_with(&d, None, &FuzzyConfig::default(), "n", 10).is_empty());
+    }
+
+    #[test]
+    fn builtin_jt_finds_jintian() {
+        let d = Dictionary::builtin();
+        let cands = candidates_with(&d, None, &FuzzyConfig::default(), "jt", 10);
+        assert_eq!(cands[0].text, "今天");
+        assert_eq!(cands[0].pinyin, "jin'tian");
     }
 }

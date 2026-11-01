@@ -1,7 +1,7 @@
 //! P5-lite integration coverage: candidate paging, Shift mode switching and
 //! Chinese punctuation, all through the public `process_key`-level API.
 
-use engine_core::config::{default_config, EngineConfig, FuzzyConfig, ShiftAction};
+use engine_core::config::{default_config, EngineConfig, ShiftAction};
 use engine_core::dict::Dictionary;
 use engine_core::session::{
     self, current_page, new_session_with, next_page, page_count, prev_page, process_key,
@@ -16,7 +16,7 @@ const MA_WORDS: [&str; 10] = ["十", "九", "八", "七", "六", "五", "四", "
 
 /// Session over the ten-entry dictionary, preedit set to `raw`.
 fn ma_session(raw: &str, config: EngineConfig) -> engine_core::session::Session {
-    let dict = Dictionary::from_tsv_with(MA_TSV, &FuzzyConfig::default()).expect("inline tsv");
+    let dict = Dictionary::from_tsv(MA_TSV).expect("inline tsv");
     let mut s = new_session_with(config, dict);
     for ch in raw.chars() {
         assert_eq!(process_key(&mut s, ch), ProcessResult::Editing);

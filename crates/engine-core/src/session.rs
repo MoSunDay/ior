@@ -2,14 +2,18 @@
 //! selection, commit and learning.
 //!
 //! A [`Session`] bundles the raw preedit buffer, the engine configuration,
-//! the static dictionary (fuzzy rules already baked into its keys) and the
-//! user dictionary. [`process_key`] is a pure state transition: it inspects
-//! `s.raw` and `s.config`, mutates only through `&mut Session`, and reports
-//! what the frontend should do with the key.
+//! the static dictionary and the user dictionary. Spelling transforms are
+//! applied at decode time: fuzzy rules via the query-side pipeline
+//! (`s.config.fuzzy`), double pinyin via the optional [`DpTable`] on the
+//! session — the preedit always shows the letters as typed. [`process_key`]
+//! is a pure state transition: it inspects `s.raw` and `s.config`, mutates
+//! only through `&mut Session`, and reports what the frontend should do
+//! with the key.
 
-use crate::config::{EngineConfig, ShiftAction};
+use crate::config::{DoublePinyin, EngineConfig, ShiftAction};
 use crate::decoder::{self, Candidate};
 use crate::dict::Dictionary;
+use crate::double_pinyin::{self, DpTable};
 use crate::punct;
 use crate::segmenter::best_segmentation;
 use crate::user_dict::{self, UserDict};
@@ -25,8 +29,12 @@ pub struct Session {
     pub raw: String,
     /// Engine configuration snapshot for this session.
     pub config: EngineConfig,
-    /// Static dictionary (fuzzy rules baked in at build time).
+    /// Static dictionary (canonical keys; fuzzy matching is query-side).
     pub dict: Dictionary,
+    /// Double-pinyin table used when `config.double_pinyin` is `Custom`
+    /// (loaded by the host with `double_pinyin::parse_tsv`; `None` leaves
+    /// double-pinyin decoding inactive).
+    pub dp_table: Option<DpTable>,
     /// Learned entries for this user.
     pub user_dict: UserDict,
     /// False = Chinese mode, true = English (ASCII) mode. Letters are
@@ -53,27 +61,34 @@ pub enum ProcessResult {
     Committed(String),
 }
 
-/// Creates a session with the builtin core dictionary built under
-/// `config.fuzzy`.
+/// Creates a session with the builtin core dictionary (canonical keys).
 pub fn new_session(config: EngineConfig) -> Session {
-    let dict = Dictionary::builtin(&config.fuzzy);
-    new_session_with(config, dict)
+    new_session_with(config, Dictionary::builtin())
 }
 
-/// Creates a session over a caller-supplied dictionary (e.g. a merged or
-/// fuzzy-built one). Pass a dictionary built with the same `config.fuzzy`
-/// for consistent keys.
+/// Creates a session over a caller-supplied dictionary (e.g. `.ior`
+/// layers merged with [`Dictionary::from_ior_layers`]).
 pub fn new_session_with(config: EngineConfig, dict: Dictionary) -> Session {
     Session {
         raw: String::new(),
         config,
         dict,
+        dp_table: None,
         user_dict: user_dict::new(),
         ascii_mode: false,
         ascii_punct: false,
         page: 0,
         punct: punct::new(),
     }
+}
+
+/// Installs (or clears) the double-pinyin table used for decoding when
+/// `config.double_pinyin` is [`DoublePinyin::Custom`]. The host loads the
+/// table text with `double_pinyin::parse_tsv`; no table is bundled with
+/// the engine (real scheme tables are pending data import, see the
+/// `double_pinyin` module docs).
+pub fn set_double_pinyin(s: &mut Session, table: Option<DpTable>) {
+    s.dp_table = table;
 }
 
 /// Feeds one key into the session and reports the outcome.
@@ -151,10 +166,11 @@ fn handle_commit_or_passthrough(s: &mut Session) -> ProcessResult {
     }
 }
 
-/// Commits `cand`: learn it under the normalized key of the current raw
-/// input (when learning is on), clear the composition, and report the text.
+/// Commits `cand`: learn it under the normalized key of the *decode input*
+/// (the raw buffer, or its double-pinyin transform when that mode is on)
+/// when learning is on, clear the composition, and report the text.
 fn commit_candidate(s: &mut Session, cand: &Candidate) -> ProcessResult {
-    let key = normalized_key(&s.raw);
+    let key = normalized_key(&decode_input(s));
     if s.config.user_learning {
         if let Some(k) = key {
             user_dict::learn(&mut s.user_dict, &k, &cand.text);
@@ -304,6 +320,10 @@ fn handle_punct(s: &mut Session, ch: char) -> ProcessResult {
 }
 
 /// Up to `min(limit, config.max_candidates)` candidates for the preedit.
+/// Decoding runs on the double-pinyin transform of the raw buffer when
+/// `config.double_pinyin` is `Custom` and a table is installed (a failed
+/// transform falls back to the raw letters); the preedit itself keeps
+/// showing `s.raw`.
 pub fn candidates(s: &Session, limit: usize) -> Vec<Candidate> {
     let limit = limit.min(s.config.max_candidates);
     let user = if s.config.user_learning {
@@ -311,7 +331,21 @@ pub fn candidates(s: &Session, limit: usize) -> Vec<Candidate> {
     } else {
         None
     };
-    decoder::candidates(&s.dict, user, &s.raw, limit)
+    let raw = decode_input(s);
+    decoder::candidates_with(&s.dict, user, &s.config.fuzzy, &raw, limit)
+}
+
+/// The string decoding operates on: `s.raw` under the raw-key modes, or
+/// its double-pinyin expansion when `config.double_pinyin` is `Custom`
+/// with an installed table. A transform that fails (odd length, unknown
+/// code, invalid syllable) keeps the raw letters so typing stays live.
+fn decode_input(s: &Session) -> String {
+    match (&s.config.double_pinyin, &s.dp_table) {
+        (DoublePinyin::Custom, Some(table)) => {
+            double_pinyin::to_full(table, &s.raw).unwrap_or_else(|| s.raw.clone())
+        }
+        _ => s.raw.clone(),
+    }
 }
 
 /// Preedit string for display: each `'`-separated run is shown as its best
@@ -336,7 +370,8 @@ pub fn reset(s: &mut Session) {
 
 /// Best-segmentation key of `raw`: each `'`-separated run segmented and all
 /// syllables joined with `'`. `None` when any run cannot be segmented.
-/// (No fuzzy rules here; those live inside the dictionary.)
+/// (No fuzzy rules here; the decoder probes spelling variants around this
+/// key at query time.)
 pub fn normalized_key(raw: &str) -> Option<String> {
     let mut parts: Vec<String> = Vec::new();
     for run in raw.split('\'') {

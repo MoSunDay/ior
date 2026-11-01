@@ -13,7 +13,6 @@
 mod synth;
 
 use dict_tools::format as dt_format;
-use engine_core::config::FuzzyConfig;
 use engine_core::decoder;
 use engine_core::dict::Dictionary;
 use std::time::Instant;
@@ -116,11 +115,10 @@ fn scenario_compile() -> CompileOutcome {
 /// measure lookup latency. Loading data produced by dict-tools doubles as
 /// a cross-crate format compatibility check.
 fn scenario_load(bytes: &[u8]) -> (LoadOutcome, Dictionary, Vec<u8>) {
-    let fuzzy = FuzzyConfig::default();
     let mut load_secs = Vec::with_capacity(LOAD_RUNS);
-    let mut dict = Dictionary::from_ior_bytes(bytes, &fuzzy).expect("dict-tools v2 bytes load");
+    let mut dict = Dictionary::from_ior_bytes(bytes).expect("dict-tools v2 bytes load");
     for _ in 0..LOAD_RUNS {
-        let (secs, reloaded) = timed(|| Dictionary::from_ior_bytes(bytes, &fuzzy));
+        let (secs, reloaded) = timed(|| Dictionary::from_ior_bytes(bytes));
         load_secs.push(secs);
         dict = reloaded.expect("reload");
     }
