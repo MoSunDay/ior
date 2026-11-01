@@ -38,9 +38,28 @@
   全部四条学习路径（键盘提交/候选点选/Shift 切换附带提交/析构兜底）均落盘快照
   （快照即压实，失败静默不阻断输入）。
 
+### P1 = M2a：拼式管线数据化（模糊音查询化 + 简拼 + 双拼框架）
+- 模糊音从「构建期烘焙进词典 key」改为**查询侧等价类展开**（`spelling.rs`：
+  `syllable_variants`/`key_variants`，声母×韵母独立组合、跨变体取最高频不叠加）；
+  词典 key 保持全拼规范形，`from_tsv`/`from_ior_bytes` 系列去模糊参数。
+- 简拼：`Dictionary` 新增声母首字母 BTreeMap 索引 + `lookup_initials` 前缀查询，
+  简拼候选排全拼之后、每 key 一条（`jt`→今天/`jin'tian`）。
+- 双拼框架：`DoublePinyin{Off,Custom}` + 可加载键位表（`double_pinyin.rs`
+  `parse_tsv`/`to_full`，逐音节 `is_syllable` 校验，失败回退全拼）。真实键位表
+  （自然码/小鹤/微软）因离线未编造，待网络恢复以数据导入。
+- addon `candidates` 薄封装保持原签名，宿主零改动。
+
+### CI 与工程
+- `.github/workflows/ci.yml`：fmt/clippy/test + 行数红线（400/800 规范脚本
+  `scripts/check_line_limits.sh`）+ bench 参考性回归（P0 基线门禁不阻断）。
+
 ### 验证
-- `cargo test --workspace`：**158/158** 通过（M0 基线 78 → +80）；`clippy -D warnings`、
-  `cargo fmt --check` 全绿；fcitx5 C++ 薄壳 cmake 构建链接通过，`nm -D` 确认 18 符号导出。
+- `cargo test --workspace`：**193/193** 通过（+35）；`clippy -D warnings`、
+  `cargo fmt --check` 全绿；fcitx5 C++ cmake 构建通过，`nm -D` 18 符号。
+- **真机回归**（Ubuntu noble/X11/fcitx5 5.1.7/GTK，xdotool 合成键序）：
+  全拼/翻页+页内选词/中文标点/配对引号/Shift 中英/长词提交全通过；userdb
+  四路落盘与跨重启持久化实测确认。记录见 `docs/M1-VERIFY.md`（含截图）。
+  过程中评审发现并修复 saveUserdb 仅覆盖 1/3 提交路径的缺陷。
 ## [0.1.0-m0] - 2026-10-31
 
 M0 里程碑：引擎骨架 + fcitx5 薄壳 + 词级转换全链路打通，GTK/Qt/XIM 三前端
