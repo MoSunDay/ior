@@ -11,6 +11,11 @@ data/
 │   ├── sample-extra.tsv         # IT 领域示例词库（20 条，M0 冒烟测试用）
 │   ├── luna_pinyin.dict.yaml    # rime 明月拼音原词库（P0 数据导入）
 │   └── essay.txt                # rime preset vocabulary（短语权重）
+├── opencc/                      # OpenCC ver.1.4.2 t2s 表（Apache-2.0）
+│   ├── TSCharacters.txt
+│   ├── TSPhrases.txt
+│   ├── LICENSE
+│   └── README.md
 ├── double-pinyin/
 │   ├── rime/                    # 上游 schema 原文（含 algebra 键位规则）
 │   │   ├── natural.schema.yaml  # 自然碼
@@ -22,18 +27,39 @@ data/
 └── README.md                    # 本文件
 ```
 
-`data/dicts/core.ior`（luna + essay 编译产物，约 9.4 MB / 293,168 keys /
-429,870 词条）**不入库**，由
-`cargo run -p dict-tools --release -- compile data/dicts/luna_pinyin.dict.yaml data/dicts/core.ior`
+`data/dicts/core.ior`（luna + essay 编译并转简体，约 9.4 MB / 293,168 keys /
+427,661 简体词条）**不入库**，由
+`cargo run -p dict-tools --release -- compile --simplify data/dicts/luna_pinyin.dict.yaml data/dicts/core.ior`
 生成（`compile` 会按 dict 头部的 `use_preset_vocabulary: true` 自动读取同目录
-`essay.txt`）；安装用 `scripts/install-core-dict.sh`。内置的
+`essay.txt`，`--simplify` 再用 `data/opencc/` 的 t2s 表转换后归一化去重）；
+安装用 `scripts/install-core-dict.sh`，该脚本默认带 `--simplify`。内置的
 `crates/engine-core/assets/core.tsv`（~90 条）仅作为测试/无数据时的兜底。
 
 `data/dicts/core.gram`（可选语言模型，约 6.0 MB）同样**不入库**：安装脚本把
 刚编译的 `core.ior` 导出为临时 TSV 后调用 `dict-tools train`，确保 preset 短语
-也进入字符 n-gram，再与词典一起安装。当前全量训练为 38,979 unigram /
-279,175 bigram / 297,665 trigram；raw 总权重 74,911,345,415 超过 `u32`，writer
-按统一除数缩放后头值 4,161,752,858（格式见 `engine-core/src/lm.rs`）。
+也进入字符 n-gram，再与词典一起安装。当前全量训练为 38,176 unigram /
+276,582 bigram / 297,084 trigram，文件 6,235,618 字节；raw 总权重
+74,911,345,415 超过 `u32`，writer 按统一除数缩放后头值 4,161,752,842
+（格式见 `engine-core/src/lm.rs`）。
+
+## 简体转换数据（OpenCC t2s）
+
+`data/opencc/` 原样收录 OpenCC `ver.1.4.2` 的两张繁体→简体表和
+Apache-2.0 许可证，供 `dict-tools compile --simplify` 在**构建期**使用；
+引擎与运行时没有 OpenCC 依赖。详细来源与 sha256 见
+`data/opencc/README.md`。
+
+| 文件 | 上游 | 大小 | 许可证 |
+|------|------|-----:|--------|
+| `opencc/TSCharacters.txt` | OpenCC ver.1.4.2 `data/dictionary/` | 104,516 B | Apache-2.0 |
+| `opencc/TSPhrases.txt` | OpenCC ver.1.4.2 `data/dictionary/` | 8,786 B | Apache-2.0 |
+| `opencc/LICENSE` | OpenCC ver.1.4.2 | 9,165 B | Apache-2.0 |
+
+转换等价于 OpenCC 的 `t2s.json` 链：最长短语优先，未命中短语时逐字查表，
+每行只取第一个候选值。源词库仍保留繁体原文；转换后按简化后的
+`(key, hanzi)` 重新归一化，因此同音同形词条会合并——本轮改写 268,003
+词条，词条总数由 429,870 降至 427,661。OpenCC 表未收录的字按原样保留
+（例如 `妳`，所以 `妳好` 仍是候选但不影响首选 `你好`）。
 
 ## 双拼键位表（P1 数据导入落地）
 
@@ -183,6 +209,8 @@ engine-core、不内嵌 403 音节表，需人工比对）。
 | `dicts/luna_pinyin.dict.yaml` | rime-luna-pinyin | 70,055 词条（19,920 键） | LGPL-3.0 |
 | `dicts/essay.txt` | rime-essay | 442,685 短语（5,887,490 B） | LGPL-3.0 |
 | `double-pinyin/rime/*.schema.yaml` | rime-double-pinyin | 三套 schema | GPL-3.0 |
+| `opencc/TSCharacters.txt` | OpenCC ver.1.4.2 | 单字表 104,516 B | Apache-2.0 |
+| `opencc/TSPhrases.txt` | OpenCC ver.1.4.2 | 短语表 8,786 B | Apache-2.0 |
 ```
 
 ## 二期模型清单

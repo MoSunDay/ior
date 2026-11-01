@@ -431,6 +431,7 @@ fn compile_parses_vocabulary_flag_in_any_position() {
             input: "in.yaml".into(),
             output: "out.ior".into(),
             vocabulary: Some("data/dicts/essay.txt".into()),
+            simplify: false,
         }
     );
     let args = arg_list(&["compile", "in.yaml", "out.ior"]);
@@ -440,10 +441,44 @@ fn compile_parses_vocabulary_flag_in_any_position() {
             input: "in.yaml".into(),
             output: "out.ior".into(),
             vocabulary: None,
+            simplify: false,
         }
     );
     let args = arg_list(&["compile", "in.yaml", "out.ior", "--vocabulary"]);
     assert!(cli::parse_args(&args).unwrap_err().contains("needs a path"));
+    let args = arg_list(&["compile", "in.tsv", "out.ior", "--simplify"]);
+    assert_eq!(
+        cli::parse_args(&args).unwrap(),
+        cli::Command::Compile {
+            input: "in.tsv".into(),
+            output: "out.ior".into(),
+            vocabulary: None,
+            simplify: true,
+        }
+    );
+}
+
+#[test]
+fn compile_simplify_rewrites_traditional_entries() {
+    let input = temp_path("simplify.tsv");
+    let output = temp_path("simplify.ior");
+    fs::write(&input, "tian'qi\t天氣\t100\nni\t你\t50\n").unwrap();
+    let args = arg_list(&[
+        "compile",
+        input.to_str().unwrap(),
+        output.to_str().unwrap(),
+        "--simplify",
+    ]);
+    let mut out = Vec::new();
+    assert_eq!(cli::run(&args, &mut out), 0);
+    let report = String::from_utf8(out).expect("utf8 report");
+    assert!(report.contains("simplified 1 entrie(s)"), "{report}");
+    let bytes = fs::read(&output).expect("read simplified .ior");
+    let entries = dict_tools::format::deserialize(&bytes).expect("valid .ior");
+    assert!(entries.iter().any(|entry| entry.hanzi == "天气"));
+    assert!(!entries.iter().any(|entry| entry.hanzi == "天氣"));
+    fs::remove_file(&input).ok();
+    fs::remove_file(&output).ok();
 }
 
 #[test]

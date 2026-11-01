@@ -22,11 +22,12 @@ pub enum Command {
         input_b: String,
         output: String,
     },
-    /// `compile <in> <out.ior> [--vocabulary <path>]`
+    /// `compile <in> <out.ior> [--vocabulary <path>] [--simplify]`
     Compile {
         input: String,
         output: String,
         vocabulary: Option<String>,
+        simplify: bool,
     },
     /// `validate <in> [--dump-syllables]`
     Validate { input: String, dump_syllables: bool },
@@ -51,11 +52,13 @@ SUBCOMMANDS:
     export <in.ior> <out.tsv>           dump .ior binary back to TSV
     merge   <a.ior> <b.ior> -o <out.ior>
                                         merge two .ior files (freq-sum, sorted)
-    compile <in> <out.ior> [--vocabulary <path>]
+    compile <in> <out.ior> [--vocabulary <path>] [--simplify]
                                         parse+validate+normalize (ior TSV or
                                         rime dict.yaml), write .ior v2;
                                         rime headers with use_preset_vocabulary
-                                        load essay.txt from the input's folder
+                                        load essay.txt from the input's folder;
+                                        --simplify converts hanzi with bundled
+                                        OpenCC t2s tables
     validate <in> [--dump-syllables]    structural check only; optionally list
                                         the distinct syllables of the input
     train   <in> <out.gram>             train character n-grams (ior TSV or
@@ -177,11 +180,12 @@ fn two_positional(args: &[String], usage_line: &str) -> Result<[String; 2], Stri
     Ok([first.clone(), second.clone()])
 }
 
-/// Parse `compile <in> <out.ior> [--vocabulary <path>]`.
+/// Parse `compile <in> <out.ior> [--vocabulary <path>] [--simplify]`.
 fn parse_compile(args: &[String]) -> Result<Command, String> {
-    let usage_line = "compile <in> <out.ior> [--vocabulary <path>]";
+    let usage_line = "compile <in> <out.ior> [--vocabulary <path>] [--simplify]";
     let mut positional: Vec<String> = Vec::new();
     let mut vocabulary: Option<String> = None;
+    let mut simplify = false;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -193,6 +197,10 @@ fn parse_compile(args: &[String]) -> Result<Command, String> {
                 };
                 vocabulary = Some(value.clone());
                 index += 2;
+            }
+            "--simplify" => {
+                simplify = true;
+                index += 1;
             }
             other if other.starts_with('-') => {
                 return Err(format!("unknown flag '{other}': dict-tools {usage_line}"));
@@ -213,6 +221,7 @@ fn parse_compile(args: &[String]) -> Result<Command, String> {
         input,
         output,
         vocabulary,
+        simplify,
     })
 }
 
@@ -341,6 +350,7 @@ fn execute<W: Write>(command: &Command, out: &mut W) -> Result<(), Error> {
             input,
             output,
             vocabulary,
+            simplify,
         } => {
             let text = read_text(input)?;
             let settings = crate::source::rime_settings(&text);
@@ -383,6 +393,15 @@ fn execute<W: Write>(command: &Command, out: &mut W) -> Result<(), Error> {
                 entries.extend(extra);
                 entries = format::normalize(entries);
             }
+            let mut simplified = 0;
+            if *simplify {
+                let simplifier = crate::simplify::bundled()
+                    .map_err(|err| Error::Format(format!("bundled OpenCC data: {err}")))?;
+                simplified = crate::simplify::simplify_entries(&mut entries, &simplifier);
+                // A phrase and its character form can collapse onto the same
+                // (pinyin, hanzi) row after conversion; merge those now.
+                entries = format::normalize(entries);
+            }
             let bytes = format::serialize(&entries);
             write_bytes(output, &bytes)?;
             let keys = distinct_keys(&entries);
@@ -402,6 +421,12 @@ fn execute<W: Write>(command: &Command, out: &mut W) -> Result<(), Error> {
                     &format!(
                         "preset vocabulary {path}: {words} phrase(s), {preset_entries} encoded entrie(s)"
                     ),
+                )?;
+            }
+            if *simplify {
+                report(
+                    out,
+                    &format!("simplified {simplified} entrie(s) with bundled OpenCC t2s tables"),
                 )?;
             }
             report_duplicate_note(out, source.duplicate_pairs)

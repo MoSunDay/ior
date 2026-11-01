@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Compile the vendored rime luna_pinyin dict and install the .ior binary
-# where the fcitx5 addon looks for it. System dir by default; pass
-# `--user` to install into $XDG_DATA_HOME instead (no sudo needed).
+# Compile the vendored rime luna_pinyin dict with OpenCC t2s conversion and
+# install the .ior binary where the fcitx5 addon looks for it. System dir by
+# default; pass `--user` to install into $XDG_DATA_HOME instead (no sudo).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-cargo run -q -p dict-tools --release -- compile \
+cargo run -q -p dict-tools --release -- compile --simplify \
   data/dicts/luna_pinyin.dict.yaml data/dicts/core.ior
 
 # Train the character n-gram model from the exact compiled dictionary (the
