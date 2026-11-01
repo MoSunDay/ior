@@ -1,3 +1,5 @@
+<img src="assets/ior.svg" width="72" align="right" alt="ior logo">
+
 # ior
 
 对标搜狗输入法本地能力的 Rust 输入法：**引擎纯 Rust、fcitx5 薄壳**。
@@ -24,8 +26,10 @@
 
 | crate | 职责 |
 |-------|------|
-| `engine-core` | 纯 Rust 引擎：拼音切分、词库、Viterbi/beam 解码、用户自学习（无 UI、headless 可测） |
-| `dict-tools` | 独立词库工具链：TSV ↔ `.ior` 二进制，build/inspect/export/merge，不依赖 engine-core |
+| `engine-core` | 纯 Rust 引擎：拼音切分、词库、词级/整句 beam 解码、用户自学习（无 UI、headless 可测） |
+| `dict-tools` | 独立词库工具链：TSV / rime `dict.yaml` ↔ `.ior` v2，build/inspect/export/merge/compile/validate/train |
+| `ior-config` | 零依赖极简 TOML 子集 + 配置 schema/default/patch/校验（addon 启动加载） |
+| `bench` | 自研计时的性能与端到端互锁基准（编译/加载/查询/整句解码） |
 | `fcitx5-ior` (fcitx5-addon) | C ABI 桥（Rust，staticlib/cdylib）+ ≤500 行 C++ 薄壳接入 fcitx5 |
 | `voice` | 二期占位：语音管线规划（capture/VAD/流式 ASR/批量 ASR）、模型清单 |
 | `llm` | 二期占位：本地 LLM 规划（延迟预算、降级策略、prompt 模板、模型分档） |
@@ -76,16 +80,39 @@ scripts/download_models.sh
   `[Groups/0/Items/*]` 段补一条 `Name=ior` 并重启 fcitx5（`fcitx5-remote -r`
   不重载 profile）。真机回归记录见 `docs/M1-VERIFY.md`。
 
+## 配置
+
+用户配置：`${XDG_CONFIG_HOME:-~/.config}/fcitx5/ior/config.toml`。文件缺失或
+非法时回退默认值（warning 输出到 stderr），修改后重启 fcitx5 生效。
+
+```toml
+[engine]
+double_pinyin = "natural"  # off | natural | xiaohe | mspy | custom
+page_size = 5
+max_candidates = 10
+chinese_punct = true
+user_learning = true
+shift_action = "commit"    # commit | temp | none
+
+# 只写想改的项，其余取默认（模糊音默认全关）
+[engine.fuzzy]
+z_zh = true
+an_ang = true
+```
+
+`[switches]` / `[punct]` 已被解析保留，但尚未驱动会话（P4 收尾项）；完整差距与
+后续顺序见 `docs/ROADMAP-RIME-PARITY.md`。
+
 ## 里程碑
 
 | 阶段 | 内容 |
 |------|------|
 | **M0 ✅ 完成** | 骨架 + 薄壳 + 词级转换打通，GTK/Qt/XIM 三前端实测通过（2026-10-31，见 `docs/M0-FRONTEND-TEST.md`） |
-| M1 (=P0) 🟡 部分 | 词库规模：`.ior` v2 二进制 + engine-core 加载/多词典叠加 ✅；10 万级数据导入待网络 |
-| M2a (=P1) 🟡 部分 | 拼式管线数据化：运行时模糊音、简拼、双拼框架 ✅；真实键位表待数据导入 |
-| M2b (=P2) | 整句 trigram + beam 解码、`.gram` 语言模型 |
-| M3 (=P3) 🟡 部分 | 用户词典持久化（append-log+snapshot、时间衰减、TSV 备份）✅ 真机实测；自动造词待 P2 |
-| M3.5 (=P4) | 配置/方案体系：极简 TOML、switches、热部署、user patch |
+| **M1 (=P0) ✅ 完成** | `.ior` v2 + engine-core 加载/多词典叠加；luna + essay preset 编译 429,870 词条 / 9.4 MB，真机验证（`docs/M2-VERIFY.md`） |
+| **M2a (=P1) ✅ 完成** | 查询侧模糊音/简拼 + 自然碼/小鶴/微軟三套内置双拼，`config.toml` 可选 |
+| M2b (=P2) 🟡 词表模型可用 | `.gram` trigram + beam + bench/互锁 ✅；安装脚本训练/安装 `core.gram`，addon 启动加载，整句真机通过；真实语料模型与准确率基线待做 |
+| M3 (=P3) 🟡 部分 | 用户词典持久化（append-log+snapshot、时间衰减、TSV 备份）✅ 真机实测；整句自动造词待实现 |
+| M3.5 (=P4) 🟡 部分 | `ior-config` TOML/schema/patch + 启动映射 ✅；switches/punct 生效、热重载、配置 UI 待做 |
 | M4 (=P5) 🟡 部分 | 分页/标点/Shift 中英/FFI v2 ✅ 真机实测；以词定字/符号面板/per-IC/状态区/联想待做 |
 | M4+/M5 (=P6) | 简繁、评测体系（CI 门禁已落地）；反查与码表方案明确降级 backlog |
 | 二期 V1~V4 | 语音：V1 按键说话+VAD → V2 流式 ASR → V3 批量精解码 → V4 模型管理与下载 |

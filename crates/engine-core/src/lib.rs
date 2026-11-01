@@ -24,11 +24,11 @@
 //!   path, plus the [`decoder::candidates_with_lm`] beam routing;
 //! - [`session`]: key handling, preedit, commit and learning.
 //!
-//! Roadmap: additional fuzzy rules with the same query-side pipeline, real
-//! double-pinyin scheme tables pending data import (see
-//! [`double_pinyin`]), simplified/traditional (U) and v-mode (V) input
-//! modes in M4; corpus-level LM data to replace the word-list-derived
-//! counts (P2 follow-up).
+//! Roadmap: additional fuzzy rules with the same query-side pipeline,
+//! host-installed custom double-pinyin tables (builtin natural/flypy/mspy
+//! tables are already bundled, see [`double_pinyin`]), simplified/
+//! traditional (U) and v-mode (V) input modes in M4; corpus-level LM data
+//! to replace the word-list-derived counts (P2 follow-up).
 
 pub mod beam;
 pub mod beam_search;

@@ -2,9 +2,31 @@
 
 本项目所有显著变更记录于此。格式参考 Keep a Changelog，版本遵循 SemVer。
 
-## [Unreleased] - Rime 对标第一批（P0–P4 + preset vocabulary）
+## [Unreleased] - Rime 对标第一批（P0–P4 + preset vocabulary + LM）
 
 规划全貌见 `docs/ROADMAP-RIME-PARITY.md`；本批覆盖 P0 / P5-lite / P3 / P1 / P2 / P4，并补齐 Rime preset vocabulary 的部署语义。
+
+### 品牌与第二轮复审（2026-11-01）
+- 新增自有图标 `assets/ior.svg`（含 48×48 PNG 变体）；`inputmethod/ior.conf` 的占位
+  `Icon=fcitx-pinyin` 改为 `Icon=ior`，CMake 安装到
+  `share/icons/hicolor/scalable/apps/`（fcitx5 主题图标约定）。
+- 复审 `docs/ROADMAP-RIME-PARITY.md`：刷新现状、13 项差距表、P0–P5 状态与
+  下一批优先级（P2 质量收尾 / per-IC 隔离 / 配置闭环）；README 的 crates 表、
+  里程碑与配置说明同步。
+
+### LM 接入与全量词库训练（2026-11-01）
+- `Session` 新增 `lm: Option<GramModel>` 与 `set_lm`；`session::candidates` 在装有
+  模型时走 `decoder::candidates_with_lm`，无模型保持原三步路径。
+- addon 启动时按 `$XDG_DATA_HOME/fcitx5/ior/core.gram` → `/usr/share/fcitx5/ior/core.gram`
+  加载模型（缺失静默跳过、损坏打印后回退），`new_engine_with_lm` 可供测试注入。
+- 修复全量词库训练 `.gram` 的 `u32` 头溢出：raw 总权重超限时，writer 对所有计数
+  统一除以同一除数（非零值保底 1），保证头与值区严格自洽；reader 的等值校验不变。
+  luna+essay 计 38,979 unigram / 279,175 bigram / 297,665 trigram，raw 权重
+  74,911,345,415 → 序列化头 4,161,752,858，文件 6,270,034 字节。
+- `scripts/install-core-dict.sh` 从**已编译**的 `core.ior` 导出临时 TSV 后训练
+  `core.gram` 并随词典安装，preset 短语一并进入模型；`.gram` 构建产物不入库。
+- 真机整句：`jintiantianqibucuo␣` → 今天天氣不錯，`woxiangqubeijing␣` →
+  我想去北京（`docs/M2-VERIFY.md`）。
 
 ### P0 = M1：词库二进制与加载
 - `.ior` 格式升级 **v2**：13 字节头 + key 索引区（varint 长度前缀、key 升序去重）+ 值区
@@ -102,7 +124,8 @@
 - 接线：`decoder::candidates_with_lm(dict,user,Option<&GramModel>,fuzzy,raw,limit)`——
   无模型/简拼/不可切分/音节数 < `MIN_BEAM_SYLLABLES`(3)/beam_width=0 一律回退旧三步
   拼装；beam 结果尾部合并旧路径候选（去重、按 limit 截断），任何输入不劣于 M0。
-  `session.rs` 未动（禁碰），宿主层后续接线。
+  `session.rs` 增加可选 LM 字段与 `set_lm`，addon 启动加载 `core.gram` 并接入；
+  模型缺失/损坏时自动回退旧路径。
 - bench：新增场景 [4] 整句解码（dict-tools 训练 → engine-core beam 计时，兼作跨 crate
   格式互锁）与 `--help`；fixture 8 音节整句 P50 约 107 µs，top1 = 今天天气不错很好
   （LM 链式打分胜过 金田…）。`crates/bench/tests/gram_interlock.rs`：常量对齐、
@@ -135,7 +158,7 @@
   `core.ior`；`new_engine_with` 保留测试注入 Config+Dictionary。
 
 ### 验证
-- `cargo test --workspace`：**279/279** 通过；`clippy -D warnings`、
+- `cargo test --workspace`：**282/282** 通过；`clippy -D warnings`、
   `cargo fmt --check`、行数门禁全绿；fcitx5 C++ cmake 构建通过，`nm -D` 18 符号。
 - **真机回归**（Ubuntu noble/X11/fcitx5 5.1.7/GTK，xdotool 合成键序）：
   全拼 `tianqi/jintian/nihao/zhongguo` 首选 天氣/今天/你好/中國；自然码

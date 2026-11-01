@@ -53,3 +53,13 @@ endif()
 install(TARGETS ior DESTINATION "${FCITX_INSTALL_ADDONDIR}")
 install(FILES ior.conf DESTINATION "${FCITX_INSTALL_ADDONCFGDIR}")
 install(FILES inputmethod/ior.conf DESTINATION "${FCITX_INSTALL_INPUTMETHODDIR}")
+
+# Theme icon referenced by `Icon=ior` in inputmethod/ior.conf. The source
+# tree keeps brand assets at <workspace>/assets so README and the addon share
+# one file.
+install(FILES "${IOR_WORKSPACE_DIR}/assets/ior.svg"
+        DESTINATION "${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps"
+        RENAME ior.svg)
+install(FILES "${IOR_WORKSPACE_DIR}/assets/ior-48.png"
+        DESTINATION "${CMAKE_INSTALL_DATADIR}/icons/hicolor/48x48/apps"
+        RENAME ior.png)

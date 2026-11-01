@@ -31,6 +31,7 @@ sudo cmake --install build
 | `libior.so` | `/usr/lib/<arch>/fcitx5/` | 模块名必须带 `lib` 前缀（`Library=libior`） |
 | `ior.conf` | `/usr/share/fcitx5/addon/` | addon 元数据 |
 | `inputmethod/ior.conf` | `/usr/share/fcitx5/inputmethod/` | 输入法注册 |
+| `assets/ior.svg` / `ior-48.png` | `/usr/share/icons/hicolor/{scalable,48x48}/apps/` | `Icon=ior` 的主题图标 |
 
 注意：`cmake --install --prefix` 改不动 configure 期固化的安装目录，
 请务必在 configure 时传 `-DCMAKE_INSTALL_PREFIX`。用户级
