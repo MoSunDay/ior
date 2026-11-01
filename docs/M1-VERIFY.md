@@ -2,8 +2,8 @@
 
 环境：Ubuntu noble / X11（DISPLAY=:0）/ fcitx5 5.1.7 / GTK 前端（mousepad，
 `GTK_IM_MODULE=fcitx`）/ xdotool 合成键序 / scrot 截图 / userdb 落盘与
-文本缓冲区双判据。本批验证对象：P0/P5-lite/P3 已提交代码（HEAD b56423c
-之后的 saveUserdb 四路落盘修复）。
+文本缓冲区双判据。本批验证对象：P0/P5-lite/P3 已提交代码（含 b56423c 内的 saveUserdb
+四路落盘修复与 P1 拼式管线）。
 
 ## 安装与激活
 

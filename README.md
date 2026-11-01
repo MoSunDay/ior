@@ -71,18 +71,23 @@ scripts/download_models.sh
   fcitx5 --replace &                # 或注销重登；然后 fcitx5-remote -s ior 切换
   ```
 
+  注意：`fcitx5-remote -s ior` 只能切到**当前 profile 组内**的输入法——组内
+  没有 ior 时该命令静默不生效。需在 `~/.config/fcitx5/profile` 的
+  `[Groups/0/Items/*]` 段补一条 `Name=ior` 并重启 fcitx5（`fcitx5-remote -r`
+  不重载 profile）。真机回归记录见 `docs/M1-VERIFY.md`。
+
 ## 里程碑
 
 | 阶段 | 内容 |
 |------|------|
 | **M0 ✅ 完成** | 骨架 + 薄壳 + 词级转换打通，GTK/Qt/XIM 三前端实测通过（2026-10-31，见 `docs/M0-FRONTEND-TEST.md`） |
-| M1 (=P0) | 词库规模：`.ior` v2 二进制 + engine-core 加载/多词典叠加 + 10 万级数据导入 |
-| M2a (=P1) | 拼式管线数据化：运行时模糊音、简拼、双拼（自然码/小鹤/微软） |
+| M1 (=P0) 🟡 部分 | 词库规模：`.ior` v2 二进制 + engine-core 加载/多词典叠加 ✅；10 万级数据导入待网络 |
+| M2a (=P1) 🟡 部分 | 拼式管线数据化：运行时模糊音、简拼、双拼框架 ✅；真实键位表待数据导入 |
 | M2b (=P2) | 整句 trigram + beam 解码、`.gram` 语言模型 |
-| M3 (=P3) | 用户词典持久化（append-log+snapshot、时间衰减）、自动造词、TSV 备份接口 |
+| M3 (=P3) 🟡 部分 | 用户词典持久化（append-log+snapshot、时间衰减、TSV 备份）✅ 真机实测；自动造词待 P2 |
 | M3.5 (=P4) | 配置/方案体系：极简 TOML、switches、热部署、user patch |
-| M4 (=P5) | 分页/标点/Shift 中英/以词定字/符号面板/per-IC/状态区/联想 |
-| M4+/M5 (=P6) | 简繁、评测体系 CI 门禁；反查与码表方案明确降级 backlog |
+| M4 (=P5) 🟡 部分 | 分页/标点/Shift 中英/FFI v2 ✅ 真机实测；以词定字/符号面板/per-IC/状态区/联想待做 |
+| M4+/M5 (=P6) | 简繁、评测体系（CI 门禁已落地）；反查与码表方案明确降级 backlog |
 | 二期 V1~V4 | 语音：V1 按键说话+VAD → V2 流式 ASR → V3 批量精解码 → V4 模型管理与下载 |
 
 完整差距对照与依赖图见 `docs/ROADMAP-RIME-PARITY.md`。
