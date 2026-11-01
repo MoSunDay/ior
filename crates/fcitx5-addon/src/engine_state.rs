@@ -19,6 +19,7 @@ use std::path::{Path, PathBuf};
 
 use engine_core::config::{self as core_config, EngineConfig, FuzzyConfig};
 use engine_core::dict::Dictionary;
+use engine_core::lm::{self, GramModel};
 use engine_core::session::{self, ProcessResult, Session};
 use engine_core::user_dict::{self, UserDict};
 use ior_config as user_config;
@@ -42,16 +43,29 @@ pub struct IorEngine {
 /// Builds an engine at client start: user config (`$XDG_CONFIG_HOME/
 /// fcitx5/ior/config.toml`, all defaults when absent or invalid), the
 /// `core.ior` dictionary when installed (user data dir first, then the
-/// system share dir), and freshly computed display buffers.
+/// system share dir), an optional `core.gram` language model from those
+/// same data dirs, and freshly computed display buffers.
 pub fn new_engine() -> IorEngine {
-    new_engine_with(startup_config(), startup_dictionary())
+    new_engine_with_lm(startup_config(), startup_dictionary(), startup_lm())
 }
 
-/// Builds an engine over caller-supplied config + dictionary. Tests use
-/// this to stay independent of data installed on the host.
+/// Builds an engine over caller-supplied config + dictionary without a
+/// language model. Tests use this to stay independent of host data.
 pub fn new_engine_with(engine_config: EngineConfig, dict: Dictionary) -> IorEngine {
+    new_engine_with_lm(engine_config, dict, None)
+}
+
+/// Builds an engine over caller-supplied config, dictionary and optional
+/// language model, then computes the initial display buffers.
+pub fn new_engine_with_lm(
+    engine_config: EngineConfig,
+    dict: Dictionary,
+    lm_model: Option<GramModel>,
+) -> IorEngine {
+    let mut session = session::new_session_with(engine_config, dict);
+    session::set_lm(&mut session, lm_model);
     let mut engine = IorEngine {
-        session: session::new_session_with(engine_config, dict),
+        session,
         preedit_buf: CString::new("").expect("empty CString"),
         commit_buf: CString::new("").expect("empty CString"),
         commit_taken: false,
@@ -95,6 +109,33 @@ pub fn startup_dictionary() -> Dictionary {
     Dictionary::builtin()
 }
 
+/// Optional language model for a fresh client: `core.gram` next to an
+/// installed `core.ior` (user data dir first, then system share dir).
+/// Missing files mean "no LM"; unreadable or invalid files are reported
+/// and skipped so a bad model can never prevent the engine from starting.
+pub fn startup_lm() -> Option<GramModel> {
+    let paths = lm_paths(
+        std::env::var("XDG_DATA_HOME").ok().as_deref(),
+        std::env::var("HOME").ok().as_deref(),
+    );
+    read_lm(&paths)
+}
+
+/// First readable, parseable `.gram` in `paths`; diagnostics to stderr.
+fn read_lm(paths: &[PathBuf]) -> Option<GramModel> {
+    for path in paths {
+        match fs::read(path) {
+            Ok(bytes) => match lm::from_gram_bytes(&bytes) {
+                Ok(model) => return Some(model),
+                Err(err) => eprintln!("ior: {}: {err}", path.display()),
+            },
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => eprintln!("ior: {}: {err}", path.display()),
+        }
+    }
+    None
+}
+
 /// `$XDG_CONFIG_HOME/fcitx5/ior/config.toml`, falling back to
 /// `$HOME/.config/fcitx5/ior/config.toml` (pure resolution).
 fn config_path(xdg_config_home: Option<&str>, home: Option<&str>) -> Option<PathBuf> {
@@ -109,15 +150,25 @@ fn config_path(xdg_config_home: Option<&str>, home: Option<&str>) -> Option<Path
 /// an updated `core.ior` without touching /usr), then the system share
 /// dir the install script targets.
 fn dict_paths(xdg_data_home: Option<&str>, home: Option<&str>) -> Vec<PathBuf> {
+    data_paths(xdg_data_home, home, "core.ior")
+}
+
+/// Language-model lookup order, mirroring [`dict_paths`] with `core.gram`.
+fn lm_paths(xdg_data_home: Option<&str>, home: Option<&str>) -> Vec<PathBuf> {
+    data_paths(xdg_data_home, home, "core.gram")
+}
+
+/// User data dir entry followed by the system share dir entry.
+fn data_paths(xdg_data_home: Option<&str>, home: Option<&str>, file: &str) -> Vec<PathBuf> {
     let mut paths = Vec::new();
     let user_base = match xdg_data_home {
         Some(dir) if !dir.is_empty() => Some(PathBuf::from(dir)),
         _ => home.map(|h| Path::new(h).join(".local").join("share")),
     };
     if let Some(base) = user_base {
-        paths.push(base.join("fcitx5").join("ior").join("core.ior"));
+        paths.push(base.join("fcitx5").join("ior").join(file));
     }
-    paths.push(PathBuf::from("/usr/share/fcitx5/ior/core.ior"));
+    paths.push(Path::new("/usr/share/fcitx5/ior").join(file));
     paths
 }
 
@@ -544,6 +595,55 @@ mod tests {
             dict_paths(None, None),
             vec![PathBuf::from("/usr/share/fcitx5/ior/core.ior")]
         );
+    }
+
+    #[test]
+    fn lm_path_mirrors_dictionary_lookup() {
+        assert_eq!(
+            lm_paths(Some("/xdg"), Some("/home/u")),
+            vec![
+                PathBuf::from("/xdg/fcitx5/ior/core.gram"),
+                PathBuf::from("/usr/share/fcitx5/ior/core.gram"),
+            ]
+        );
+        assert_eq!(
+            lm_paths(None, None),
+            vec![PathBuf::from("/usr/share/fcitx5/ior/core.gram")]
+        );
+    }
+
+    #[test]
+    fn read_lm_skips_missing_and_broken_files() {
+        let dir = std::env::temp_dir().join(format!("ior-lm-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).expect("mkdir");
+        let broken = dir.join("broken.gram");
+        let good = dir.join("good.gram");
+        fs::write(&broken, b"not a gram").expect("write");
+
+        // Golden 你好=8 / 金=3 model (header + 3 unigrams + 1 bigram).
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"IOGRAM");
+        bytes.extend_from_slice(&[1, 3]);
+        for count in [3u32, 1, 0, 19] {
+            bytes.extend_from_slice(&count.to_le_bytes());
+        }
+        for key in ["你", "好", "金"] {
+            bytes.push(key.len() as u8);
+            bytes.extend_from_slice(key.as_bytes());
+        }
+        for value in [8u8, 8, 3] {
+            bytes.push(value);
+        }
+        bytes.push(6);
+        bytes.extend_from_slice("你好".as_bytes());
+        bytes.push(8);
+        fs::write(&good, bytes).expect("write");
+
+        let paths = vec![dir.join("missing.gram"), broken, good];
+        let model = read_lm(&paths).expect("loads the valid model after bad paths");
+        assert_eq!(model.total_weight(), 19);
+        assert_eq!(model.counts(), (3, 1, 0));
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

@@ -26,14 +26,17 @@
 //!   8..12   unigram_count  u32 LE  (distinct keys in the unigram section)
 //!   12..16  bigram_count   u32 LE
 //!   16..20  trigram_count  u32 LE
-//!   20..24  total_weight   u32 LE  (sum of all unigram counts)
+//!   20..24  total_weight   u32 LE  (sum of the stored unigram counts)
 //!
 //! body: three sections in order — unigram, bigram, trigram. Each section:
 //!   index area  `count` records of `varint(len) utf8-key`, keys distinct
 //!               and strictly ascending in utf8 byte order, each key holds
 //!               exactly as many chars as the section's order;
-//!   value area  `count` varints — the count of the i-th index key
-//!               (summed source word frequency, saturating u32).
+//!   value area  `count` varints — the count of the i-th index key.
+//!               Counts are relative weights: the writer divides every count
+//!               by one common divisor when the raw unigram total exceeds
+//!               `u32::MAX`, then floors nonzero counts at 1, so the header
+//!               and per-key values always fit and still sum exactly.
 //! ```
 //!
 //! Readers reject bad magic, unsupported version/order, header counts that

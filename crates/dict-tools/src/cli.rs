@@ -58,6 +58,9 @@ SUBCOMMANDS:
                                         load essay.txt from the input's folder
     validate <in> [--dump-syllables]    structural check only; optionally list
                                         the distinct syllables of the input
+    train   <in> <out.gram>             train character n-grams (ior TSV or
+                                        rime dict.yaml), write .gram v1
+    lminspect <in.gram>                 print counts, total weight and top keys
 
 OPTIONS:
     -h, --help                          print this help
@@ -67,6 +70,8 @@ NOTES:
     'pinyin<TAB>hanzi<TAB>freq'; rime dict.yaml tables start after a line
     containing exactly '...' with 'hanzi<TAB>pinyin<TAB>weight' rows.
     build/compile lowercase pinyin; spaces or quotes separate syllables.
+    'train' counts only the entries present in its input; compile + export
+    first (as scripts/install-core-dict.sh does) to include preset phrases.
 
 EXIT CODES:
     0 ok   1 usage error   2 io error   3 format error";

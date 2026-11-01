@@ -1,7 +1,7 @@
 # data 目录说明
 
-本目录存放 ior 输入法的词库源文件与格式文档。二进制产物（`.ior`）不入库
-（见根目录 `.gitignore`），由 `dict-tools` 从 TSV 构建。
+本目录存放 ior 输入法的词库源文件与格式文档。二进制产物（`.ior` / `.gram`）
+不入库（见根目录 `.gitignore`），由 `dict-tools` 从词表构建。
 
 ## 目录结构
 
@@ -28,6 +28,12 @@ data/
 生成（`compile` 会按 dict 头部的 `use_preset_vocabulary: true` 自动读取同目录
 `essay.txt`）；安装用 `scripts/install-core-dict.sh`。内置的
 `crates/engine-core/assets/core.tsv`（~90 条）仅作为测试/无数据时的兜底。
+
+`data/dicts/core.gram`（可选语言模型，约 6.0 MB）同样**不入库**：安装脚本把
+刚编译的 `core.ior` 导出为临时 TSV 后调用 `dict-tools train`，确保 preset 短语
+也进入字符 n-gram，再与词典一起安装。当前全量训练为 38,979 unigram /
+279,175 bigram / 297,665 trigram；raw 总权重 74,911,345,415 超过 `u32`，writer
+按统一除数缩放后头值 4,161,752,858（格式见 `engine-core/src/lm.rs`）。
 
 ## 双拼键位表（P1 数据导入落地）
 

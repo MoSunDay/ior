@@ -4,10 +4,11 @@
 
 use dict_tools::format::{normalize, parse_tsv, to_tsv, Entry};
 use dict_tools::gram::{bigrams, total_weight, train_counts, unigrams};
-use engine_core::config::FuzzyConfig;
+use engine_core::config::{default_config, FuzzyConfig};
 use engine_core::decoder;
 use engine_core::dict::Dictionary;
 use engine_core::lm;
+use engine_core::session::{self, new_session_with, process_key, set_lm};
 
 /// Constants must be identical on both sides of the crate boundary.
 #[test]
@@ -47,6 +48,38 @@ fn dict_tools_bytes_parse_in_engine_core() {
     assert!((want - got).abs() < 1e-12, "want {want}, got {got}");
 }
 
+/// Counts above `u32::MAX` are divided by one common divisor on write so
+/// both crates can store them, while ratios (and therefore scores) survive.
+#[test]
+fn oversized_training_scales_consistently_across_crates() {
+    let entries = vec![
+        Entry {
+            pinyin: "a".into(),
+            hanzi: "今天".into(),
+            freq: u32::MAX,
+        },
+        Entry {
+            pinyin: "b".into(),
+            hanzi: "今天".into(),
+            freq: 5,
+        },
+    ];
+    let counts = train_counts(&entries);
+    assert!(total_weight(&counts) > u64::from(u32::MAX));
+    let bytes = counts.to_gram_bytes();
+    let header = u32::from_le_bytes(bytes[20..24].try_into().expect("total weight"));
+    assert!(header > 0);
+    assert!(u64::from(header) <= u64::from(u32::MAX));
+
+    let model = lm::from_gram_bytes(&bytes).expect("scaled bytes parse");
+    assert_eq!(model.total_weight(), header);
+    assert_eq!(model.counts(), (2, 1, 0));
+    let ni = model.logp(None, None, '今');
+    let tian = model.logp(None, None, '天');
+    assert!((ni - tian).abs() < 1e-12, "equal counts must stay equal");
+    assert!(ni.is_finite() && ni < 0.0);
+}
+
 /// End-to-end: compile a fixture TSV, train a model, load both into
 /// engine-core, and check that beam search picks the fluent sentence.
 #[test]
@@ -72,6 +105,24 @@ fn trained_model_decodes_whole_sentences() {
         .map(|c| c.text.clone())
         .unwrap_or_default();
     assert_eq!(top, "今天天气不错");
+
+    // The session path must route its candidates through the installed LM.
+    let typed = "jintian'tianqi'bu'cuo";
+    let mut s = new_session_with(default_config(), dict.clone());
+    for ch in typed.chars() {
+        let _ = process_key(&mut s, ch);
+    }
+    let legacy = session::candidates(&s, 10)
+        .first()
+        .map(|c| c.text.clone())
+        .unwrap_or_default();
+    assert_ne!(legacy, "今天天气不错", "fixture must exercise beam routing");
+    set_lm(&mut s, Some(model));
+    let with_lm = session::candidates(&s, 10)
+        .first()
+        .map(|c| c.text.clone())
+        .unwrap_or_default();
+    assert_eq!(with_lm, "今天天气不错");
 }
 
 /// Engine-core must reject the same damage dict-tools rejects.

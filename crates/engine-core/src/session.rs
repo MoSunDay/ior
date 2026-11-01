@@ -14,6 +14,7 @@ use crate::config::{DoublePinyin, EngineConfig, ShiftAction};
 use crate::decoder::{self, Candidate};
 use crate::dict::Dictionary;
 use crate::double_pinyin::{self, DpTable};
+use crate::lm::GramModel;
 use crate::punct;
 use crate::segmenter::best_segmentation;
 use crate::user_dict::{self, UserDict};
@@ -31,6 +32,9 @@ pub struct Session {
     pub config: EngineConfig,
     /// Static dictionary (canonical keys; fuzzy matching is query-side).
     pub dict: Dictionary,
+    /// Optional character n-gram model; when set, inputs of three or more
+    /// syllables use whole-sentence beam search (see [`candidates`]).
+    pub lm: Option<GramModel>,
     /// Active double-pinyin table. Filled at construction for the builtin
     /// schemes (`Natural`/`Xiaohe`/`Mspy`, bundled data) and installed by
     /// the host for `Custom` (`double_pinyin::parse_tsv`); `None` with a
@@ -75,6 +79,7 @@ pub fn new_session_with(config: EngineConfig, dict: Dictionary) -> Session {
         raw: String::new(),
         config,
         dict,
+        lm: None,
         dp_table,
         user_dict: user_dict::new(),
         ascii_mode: false,
@@ -89,6 +94,13 @@ pub fn new_session_with(config: EngineConfig, dict: Dictionary) -> Session {
 /// [`new_session_with`] and need no call here.
 pub fn set_double_pinyin(s: &mut Session, table: Option<DpTable>) {
     s.dp_table = table;
+}
+
+/// Installs (or clears) the character n-gram model used by whole-sentence
+/// decoding. Sessions without one keep the legacy three-step candidate
+/// assembly, so callers can enable this only when a `.gram` file is present.
+pub fn set_lm(s: &mut Session, lm: Option<GramModel>) {
+    s.lm = lm;
 }
 
 /// Feeds one key into the session and reports the outcome.
@@ -332,7 +344,7 @@ pub fn candidates(s: &Session, limit: usize) -> Vec<Candidate> {
         None
     };
     let raw = decode_input(s);
-    decoder::candidates_with(&s.dict, user, &s.config.fuzzy, &raw, limit)
+    decoder::candidates_with_lm(&s.dict, user, s.lm.as_ref(), &s.config.fuzzy, &raw, limit)
 }
 
 /// The string decoding operates on: `s.raw` under full pinyin, or its

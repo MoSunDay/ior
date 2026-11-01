@@ -39,8 +39,9 @@ const COUNT_MAX: u64 = u32::MAX as u64;
 ///
 /// Keys are utf8 strings of exactly 1/2/3 chars, kept in `BTreeMap`s so
 /// iteration is already in the on-disk order (ascending utf8 bytes =
-/// code-point order). Values accumulate as u64 and saturate at
-/// [`COUNT_MAX`] on write.
+/// code-point order). Values accumulate as u64; if the unigram total would
+/// exceed [`COUNT_MAX`], serialization divides every count by one common
+/// divisor so the header stays representable.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GramCounts {
     unigrams: BTreeMap<String, u64>,
@@ -63,7 +64,7 @@ pub fn trigrams(counts: &GramCounts) -> &BTreeMap<String, u64> {
     &counts.trigrams
 }
 
-/// Sum of all unigram counts (saturating u32 on serialization).
+/// Sum of all raw unigram counts (before any serialization scaling).
 pub fn total_weight(counts: &GramCounts) -> u64 {
     counts.unigrams.values().sum()
 }
@@ -100,7 +101,22 @@ pub fn train_counts(entries: &[Entry]) -> GramCounts {
 impl GramCounts {
     /// Serialize to `.gram` v1 bytes (deterministic: same counts, same
     /// bytes — the maps are already key-sorted).
+    ///
+    /// The header's total weight is a `u32`. Real dictionaries can sum far
+    /// above that (luna + essay is ~75 billion), so oversized count sets are
+    /// divided by one common divisor before writing. The divisor preserves
+    /// relative weights approximately and reserves one unit for every
+    /// nonzero unigram, keeping the serialized sum `<= u32::MAX` exactly.
     pub fn to_gram_bytes(&self) -> Vec<u8> {
+        let divisor = self.serialization_divisor();
+        let scaled = |value: u64| scaled_count(value, divisor);
+        let serialized_total: u64 = self
+            .unigrams
+            .values()
+            .map(|value| u64::from(scaled(*value)))
+            .sum();
+        debug_assert!(serialized_total <= COUNT_MAX);
+
         let mut out = Vec::new();
         out.extend_from_slice(GRAM_MAGIC);
         out.push(GRAM_VERSION);
@@ -112,18 +128,44 @@ impl GramCounts {
         ] {
             out.extend_from_slice(&count.to_le_bytes());
         }
-        out.extend_from_slice(&saturate(total_weight(self)).to_le_bytes());
+        out.extend_from_slice(
+            &u32::try_from(serialized_total)
+                .expect("divisor keeps unigram total within u32")
+                .to_le_bytes(),
+        );
         for section in [&self.unigrams, &self.bigrams, &self.trigrams] {
             for key in section.keys() {
                 write_u32(&mut out, key.len() as u32);
                 out.extend_from_slice(key.as_bytes());
             }
             for value in section.values() {
-                write_u32(&mut out, saturate(*value));
+                write_u32(&mut out, scaled(*value));
             }
         }
         out
     }
+
+    /// Common divisor for one serialization; 1 when the raw total fits.
+    fn serialization_divisor(&self) -> u64 {
+        let total = total_weight(self);
+        if total <= COUNT_MAX {
+            return 1;
+        }
+        let nonzero = self.unigrams.values().filter(|value| **value > 0).count() as u64;
+        // Keep one unit for each nonzero unigram (floor at 1 below), so
+        // divide by the remaining budget rather than all of COUNT_MAX.
+        let budget = COUNT_MAX.saturating_sub(nonzero).max(1);
+        total.div_ceil(budget).max(1)
+    }
+}
+
+/// Scale one count by the serialization divisor, preserving positivity.
+fn scaled_count(value: u64, divisor: u64) -> u32 {
+    if value == 0 {
+        return 0;
+    }
+    let scaled = (value / divisor).max(1);
+    u32::try_from(scaled).unwrap_or(u32::MAX)
 }
 
 /// Parse and fully validate `.gram` v1 bytes (the `lminspect` reader).
@@ -240,11 +282,6 @@ fn parse_section(
     Ok((section, pos))
 }
 
-/// Saturating u64 -> u32.
-fn saturate(value: u64) -> u32 {
-    value.min(COUNT_MAX) as u32
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -307,14 +344,16 @@ mod tests {
     }
 
     #[test]
-    fn counts_saturate_instead_of_overflowing() {
-        let big = u32::MAX;
-        let counts = train_counts(&[entry("a", "今天", big), entry("b", "今天", 5)]);
-        assert_eq!(unigrams(&counts)["今"], u64::from(big) + 5);
-        // total saturates at u32::MAX inside the header
+    fn oversized_counts_scale_to_fit_the_u32_header() {
+        let counts = train_counts(&[entry("a", "今天", u32::MAX), entry("b", "今天", 5)]);
+        assert_eq!(unigrams(&counts)["今"], u64::from(u32::MAX) + 5);
         let bytes = counts.to_gram_bytes();
-        let total = u32::from_le_bytes(bytes[20..24].try_into().expect("4 bytes"));
-        assert_eq!(total, u32::MAX);
+        let parsed = parse_gram(&bytes).expect("scaled bytes stay valid");
+        let header = u32::from_le_bytes(bytes[20..24].try_into().expect("4 bytes"));
+        assert_eq!(total_weight(&parsed), u64::from(header));
+        assert!(header > 0);
+        assert_eq!(unigrams(&parsed)["今"], unigrams(&parsed)["天"]);
+        assert_eq!(bigrams(&parsed)["今天"], unigrams(&parsed)["今"]);
     }
 
     #[test]
