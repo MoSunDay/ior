@@ -16,13 +16,19 @@
 #   --with-llm          同时部署润色服务
 #   --llm-port N        润色端口（默认 8001）
 #   --llm-model ID      润色模型（默认 Qwen/Qwen2.5-7B-Instruct）
-#   --gpu MEM           每服务显存上限 GiB（默认 12）
+#   --gpu MEM           每服务显存上限 GiB（默认 12；>16 按 90%、否则 60% 折算）
+#   --gpu-util F        直接指定 gpu-memory-utilization（0.05-0.95，覆盖 --gpu）
+#   --asr-args STR      追加传给 vllm serve 的额外参数（引号包裹，如 "--enforce-eager"）
 # 示例：
 #   scripts/deploy-asr-node02.sh m@node02 --with-llm
+#   # 8GB 共享卡（显存仅剩 ~2GB）上的最小部署：
+#   scripts/deploy-asr-node02.sh node02 --asr-model openai-mirror/whisper-small \
+#       --gpu-util 0.22 --asr-args "--enforce-eager --max-model-len 448"
 set -euo pipefail
 
 REMOTE="" ASR_PORT=8000 ASR_MODEL="Qwen/Qwen3-ASR-4B"
 WITH_LLM=0 LLM_PORT=8001 LLM_MODEL="Qwen/Qwen2.5-7B-Instruct" GPU=12
+GPU_UTIL="" ASR_ARGS="" PIP_INDEX=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -32,12 +38,15 @@ while [ $# -gt 0 ]; do
     --llm-port)  LLM_PORT="$2"; shift 2 ;;
     --llm-model) LLM_MODEL="$2"; shift 2 ;;
     --gpu)       GPU="$2"; shift 2 ;;
-    -h|--help)   sed -n '2,22p' "$0"; exit 0 ;;
+    --gpu-util)  GPU_UTIL="$2"; shift 2 ;;
+    --asr-args)  ASR_ARGS="$2"; shift 2 ;;
+    --pip-index) PIP_INDEX="$2"; shift 2 ;;
+    -h|--help)   sed -n '2,26p' "$0"; exit 0 ;;
     *) if [ -z "$REMOTE" ]; then REMOTE="$1"; shift
        else echo "unknown arg: $1" >&2; exit 1; fi ;;
   esac
 done
-[ -n "$REMOTE" ] || { sed -n '2,22p' "$0" >&2; exit 1; }
+[ -n "$REMOTE" ] || { sed -n '2,26p' "$0" >&2; exit 1; }
 
 # 一个 vllm serve 服务单元。ExecStart/环境变量见 docs/NODE02-DEPLOY.md。
 unit() { # unit <name> <port> <model> <extra-args>
@@ -49,7 +58,7 @@ Wants=network-online.target
 
 [Service]
 Type=exec
-User=vllm
+# No User= : vllm-entrypoint (root) drops to the vllm account via sudo -H.
 Environment=VLLM_USE_MODELSCOPE=true
 ExecStart=/usr/local/bin/vllm-entrypoint serve "$3" \
   --host 0.0.0.0 --port "$2" $4
@@ -65,22 +74,27 @@ run() { printf '\n==> %s\n' "$*"; ssh "$REMOTE" "$*"; }
 
 echo "deploy target: $REMOTE  (asr $ASR_MODEL:$ASR_PORT, llm $([ "$WITH_LLM" = 1 ] && echo "$LLM_MODEL:$LLM_PORT" || echo off))"
 
-# 1) 依赖：vLLM >= 0.11（audio/transcriptions 路由）。
+# 1) 服务账号 + 特权下降入口。unit 以 root 跑 wrapper，wrapper 用
+#    sudo -H -u vllm 落到服务账号（HOME 指向 /home/vllm，模型缓存同址）。
 run 'set -e
-  if command -v vllm >/dev/null 2>&1 && python3 -c "import vllm; from packaging.version import Version; import sys; sys.exit(0 if Version(vllm.__version__) >= Version(\"0.11\") else 1)"; then
-    echo "vllm $(vllm --version 2>/dev/null || echo ok) already >= 0.11"
-  else
-    python3 -m pip install --user "vllm>=0.11"  # 国内可加 -i https://pypi.tuna.tsinghua.edu.cn/simple
-  fi'
-
-# 2) 服务账号 + 固定入口（pip --user 装在登录家目录，unit 用绝对路径最稳）。
-run 'id vllm >/dev/null 2>&1 || sudo useradd -r -m -s /usr/sbin/nologin vllm
-  [ -x /usr/local/bin/vllm-entrypoint ] || sudo tee /usr/local/bin/vllm-entrypoint >/dev/null <<\ENT
+  id vllm >/dev/null 2>&1 || sudo useradd -r -m -s /usr/sbin/nologin vllm
+  sudo tee /usr/local/bin/vllm-entrypoint >/dev/null <<\ENT
 #!/bin/sh
-# vllm 的 login-shell 包装：让 systemd unit 能找到 pip --user 安装的入口。
-exec sudo -u vllm $(sudo -u vllm sh -c "command -v vllm" || echo /usr/bin/vllm) "$@"
+# 特权下降入口：解析 vllm 账号家目录里的入口二进制并以该账号执行。
+BIN=/home/vllm/.local/bin/vllm
+[ -x "$BIN" ] || BIN=$(command -v vllm || echo /usr/bin/vllm)
+exec sudo -H -u vllm "$BIN" "$@"
 ENT
   sudo chmod 755 /usr/local/bin/vllm-entrypoint'
+
+# 2) 依赖：vLLM >= 0.11（audio/transcriptions 路由），装进 vllm 账号的
+#    --user 目录（root 的 ~/.local 对服务账号不可见）。pip 对已满足的
+#    版本是 no-op，重复执行幂等；国内可追加清华 pypi 源。
+# 注意：sudo env_reset 会丢弃环境变量，镜像索引用 --index-url 参数传入。
+PIP_FLAGS=""
+[ -n "$PIP_INDEX" ] && PIP_FLAGS="--index-url $PIP_INDEX"
+run "sudo -H -u vllm python3 -m pip install --user 'vllm>=0.11' $PIP_FLAGS &&
+  sudo -H -u vllm /home/vllm/.local/bin/vllm --version 2>/dev/null | head -1"
 
 # 3) 写 systemd 单元并拉起（模型首启时经 ModelScope 下载，耗时数分钟）。
 install_unit() { # install_unit <name> <port> <model> <extra>
@@ -90,7 +104,8 @@ install_unit() { # install_unit <name> <port> <model> <extra>
   run "sudo systemctl daemon-reload && sudo systemctl enable --now $name.service"
 }
 
-install_unit ior-asr "$ASR_PORT" "$ASR_MODEL" "--gpu-memory-utilization $(awk -v g="$GPU" 'BEGIN{printf "%.2f", (g>16?0.90:0.60)}')"
+UTIL="${GPU_UTIL:-$(awk -v g="$GPU" 'BEGIN{printf "%.2f", (g>16?0.90:0.60)}')}"
+install_unit ior-asr "$ASR_PORT" "$ASR_MODEL" "--gpu-memory-utilization $UTIL $ASR_ARGS"
 [ "$WITH_LLM" = 1 ] && install_unit ior-llm "$LLM_PORT" "$LLM_MODEL" "--gpu-memory-utilization 0.35"
 
 # 4) 冒烟：等 /v1/models 就绪（首次要下载模型权重，这里最多等 15 分钟）。
