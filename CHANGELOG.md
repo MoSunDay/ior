@@ -6,6 +6,24 @@
 
 规划全貌见 `docs/ROADMAP-RIME-PARITY.md`；本批覆盖 P0 / P5-lite / P3 / P1 / P2 / P4，并补齐 Rime preset vocabulary 的部署语义。
 
+### 音节表补全与 houxuanci 回归（2026-11-01）
+- `engine-core` 的 `SYLLABLES` 由 403 补到 425：依据 bundled luna_pinyin
+  增补 22 个读音（`xuan`、`zen`、`kui`、`dei`、`nang`、`eng`、`lve`、`nun`、
+  `nia`、`pia`、`zhei`、`sei`、`tei`、`biang`、`cei`、`din`、`fiao`、`fong`、
+  `wong`、`yai`、`eh`、`lvan`），不发明数据。安装词库的 423 个去重 key
+  token 已全部可切分；`houxuanci` 不再只能切成 `hou|xu|an|ci`。
+- 回归单测：`segmentations("houxuanci")` 首选 `hou|xuan|ci` 且保留
+  `hou|xu|an|ci`；`candidates_with` 即使面对更高频的 4 音节 `后续按次`，
+  仍让 3 音节的 `候选词`（`hou'xuan'ci`）居首，并保证 `后续按次` 可达。
+- 双拼表重新生成并保持幂等：小鶴的 `lvan`、微軟的 `eh` 无法用两键表达，
+  转换脚本记录缺口到表头并继续；解码优先 `lve`/`nve` 规范拼写而非
+  `lue`/`nue` 别名，`lvan`/`luan` 仍按字典序取常用 `luan`。回环单测显式
+  登记 `lue`/`lve`、`luo`/`lo` 及自然碼/微軟 `lvan`/`luan` 碰撞；
+  `cargo test --workspace` 296/296 通过。
+- 重装 `libior.so`（md5 `1f78e8062e0dc22ecc4d553b3cea251f`）后 fcitx5
+  真机复核：全拼 `houxuanci` 候选窗可见 `hou'xuan'ci` 与第 4 条「候选词」，
+  `xuanze` + 空格落盘「选择」。
+
 ### 候选窗 preedit 不再内联回显（2026-11-01）
 - addon `updateUI` 由 `panel.setClientPreedit(...)` 改为 `panel.setPreedit(...)`：
   拼音原码只显示在候选窗顶部（候选上方），不再写入客户端文本域；空 preedit

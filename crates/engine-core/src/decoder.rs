@@ -329,6 +329,26 @@ mod tests {
     }
 
     #[test]
+    fn houxuanci_reaches_the_installed_phrase_regardless_of_frequency() {
+        // Regression: `xuan` was missing from SYLLABLES, so 候选词 could not
+        // be reached at all. The fewer-segment key must win even though the
+        // 4-syllable alternative has a far higher frequency.
+        let d = Dictionary::from_tsv(
+            "hou'xuan'ci\t候选词\t1200\n\
+             hou'xu'an'ci\t后续按次\t999999\n\
+             hou\t后\t100\nxu\t徐\t100\nxuan\t选\t100\nan\t按\t100\nci\t次\t100\n",
+        )
+        .unwrap();
+        let cands = candidates_with(&d, None, &FuzzyConfig::default(), "houxuanci", 10);
+        assert_eq!(cands[0].text, "候选词", "cands: {cands:?}");
+        assert_eq!(cands[0].pinyin, "hou'xuan'ci");
+        assert!(
+            cands.iter().any(|c| c.text == "后续按次"),
+            "cands: {cands:?}"
+        );
+    }
+
+    #[test]
     fn xian_mixes_whole_and_split_matches() {
         let d = Dictionary::builtin();
         let cands = candidates(&d, None, "xian", 10);

@@ -99,6 +99,26 @@ wo'xiang'qu'bei'jing  → 我想去北京
 复现：`cargo run -p engine-core --example probe -- \
   /usr/share/fcitx5/ior/core.ior /usr/share/fcitx5/ior/core.gram`。
 
+## 音节表补全回归：`houxuanci` / `xuanze`（2026-11-01）
+
+`SYLLABLES` 由 403 补到 425（依据 bundled luna_pinyin 的 22 个读音，含
+`xuan`、`lvan` 及 `biang`/`eh` 等罕见读音）。安装的 `core.ior` 导出
+293,168 个 key；去重后的 423 个音节 token 现全部可由音节表切分（0 缺失），
+`houxuanci` 不再只能切成 `hou|xu|an|ci`。
+
+- `segmentations("houxuanci")` 首选 `hou|xuan|ci`，仍保留
+  `hou|xu|an|ci` 备选。
+- 无 LM 的 `candidates_with`：3 音节 `候选词`（`hou'xuan'ci`）居首，
+  即使 4 音节 `后续按次` 频次更高（999999 vs 1200），且 `后续按次` 可达。
+- 安装词库 + `core.gram` probe：`houxuanci` 前 10 条包含 `候选词`
+  （`hou'xuan'ci`，第 4 条；beam 由 LM 决定首条为 `后续按次`），
+  `xuanze` → 选择 / 选则。
+- fcitx5 真机（全拼，`zenity --entry`）：键入 `houxuanci` 后候选窗显示
+  `hou'xuan'ci`，第 1–5 条为 后续按次 / 后续安次 / 后续按此 / 候选词 /
+  后续安此；`xuanze` + 空格落盘为「选择」。当前安装的
+  `/usr/lib/x86_64-linux-gnu/fcitx5/libior.so` md5
+  `1f78e8062e0dc22ecc4d553b3cea251f`。
+
 ## fcitx5 真机键序
 
 单次 bash 调用内启动 fcitx5 + mousepad，聚焦窗口后 `fcitx5-remote -s ior`，
@@ -134,7 +154,7 @@ md5 `8939ce133b11aae1476348c193444ce9`。
 ## 门禁
 
 ```text
-cargo test --workspace                 292/292 passed
+cargo test --workspace                 296/296 passed
 cargo clippy --workspace --all-targets -- -D warnings   clean
 cargo fmt --check                      clean
 scripts/check_line_limits.sh           OK

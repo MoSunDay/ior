@@ -65,10 +65,13 @@ Apache-2.0 许可证，供 `dict-tools compile --simplify` 在**构建期**使�
 
 三套真实双拼键位表由 `scripts/convert-rime-double-pinyin.py` 从上游
 schema 的 `algebra` 规则**求值**得到，不靠记忆编造：脚本对
-`crates/engine-core/src/syllable.rs` 的 404 音节逐个套用 rime 规则
+`crates/engine-core/src/syllable.rs` 的 425 音节逐个套用 rime 规则
 （erase/derive/xform/xlit），再反演出 `final<TAB>key`、`zh|ch|sh<TAB>key`
-与 `0syllable<TAB>key` 三种行。转换零冲突；engine-core 的单测再把三张表
-逐音节回环校验（仅 `lo`/`luo` 属方案固有碰撞，显式登记）。
+与 `0syllable<TAB>key` 三种行。转换零 final 冲突；两处不可避免的缺口由
+脚本跳过并写入表头：小鶴无法用两键表达 `lvan`，微軟无法表达 `eh`。
+engine-core 的单测再把三张表逐音节回环校验：除上述缺口外每个音节都有码，
+`lue`/`lve`（同一 ü 韵母的别名）、`luo`/`lo` 与自然碼/微軟的
+`lvan`/`luan`（同码异音）属方案固有碰撞，显式登记。
 
 - 上游：<https://github.com/rime/rime-double-pinyin>（GPL-3.0）。
   键位映射属于功能性事实数据，本仓库保留出处与许可证说明。
@@ -190,7 +193,7 @@ cargo run -p dict-tools -- validate data/dicts/sample-extra.tsv --dump-syllables
 连续/首尾 `'`，音节非空；hanzi 非空且不含制表/换行；`freq ≥ 1`；
 重复 `(pinyin,hanzi)` 汇总求和并打印提示而非报错。违规以退出码 3
 报告并带行号。`--dump-syllables` 打印去重音节清单（dict-tools 不依赖
-engine-core、不内嵌 403 音节表，需人工比对）。
+engine-core、不内嵌 425 音节表，需人工比对）。
 
 ## 词库来源标注模板
 

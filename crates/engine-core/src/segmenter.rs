@@ -122,6 +122,28 @@ mod tests {
     }
 
     #[test]
+    fn houxuanci_prefers_xuan_then_keeps_split() {
+        // Regression: without `xuan` in the table the only split of
+        // `houxuanci` was `hou|xu|an|ci`, so 候选词 (hou'xuan'ci) was
+        // unreachable.
+        let segs = segmentations("houxuanci");
+        assert_eq!(
+            segs.first(),
+            Some(&vec![
+                "hou".to_string(),
+                "xuan".to_string(),
+                "ci".to_string()
+            ])
+        );
+        assert!(segs.contains(&vec![
+            "hou".to_string(),
+            "xu".to_string(),
+            "an".to_string(),
+            "ci".to_string()
+        ]));
+    }
+
+    #[test]
     fn apostrophe_runs_are_not_segmented_here() {
         // separator handling lives in the decoder/session, not here
         assert!(segmentations("ni'hao").is_empty());

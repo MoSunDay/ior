@@ -14,7 +14,7 @@ M0 词级链路之后，M1/M2a 已完成，M2b/M3/M3.5/P5-lite 主体落地；`c
 - 词库：luna_pinyin 70,055 条 + `essay.txt` preset 编码后经 OpenCC t2s
   **427,661 简体词条 / 293,168 keys / 9.4 MB**；`.ior` v2 加载 + 多词典
   叠加 + 93 词内置兜底；
-- 拼式：403 音节、查询侧 8 组模糊音、简拼、自然碼/小鶴/微軟三套真实双拼
+- 拼式：425 音节、查询侧 8 组模糊音、简拼、自然碼/小鶴/微軟三套真实双拼
   （`config.toml` 的 `engine.double_pinyin` 选择）；
 - 解码：装有 `core.gram` 时 ≥3 音节走 beam 整句；简拼/短输入/无模型回退
   三步拼装（整词 → 用户词 → 逐音节拼字），常规步骤无候选时再做不完整
@@ -112,8 +112,10 @@ P6=M4+/M5。
   过 `syllable::is_syllable` 校验）+ `config::DoublePinyin` 开关 +
   `session::set_double_pinyin`（解码用变换结果、preedit 仍显原串、学习
   落在变换后 key）。✅ **数据已导入**：`data/double-pinyin/{natural,flypy,mspy}.tsv`
-  由 rime schema 的 `algebra` 规则求值生成，`include_str!` 内置；三张表对 404
-  音节逐一回环校验（仅 `lo`/`luo` 为方案固有碰撞）。
+  由 rime schema 的 `algebra` 规则求值生成，`include_str!` 内置；三张表对 425
+  音节逐一回环校验：小鶴的 `lvan`、微軟的 `eh` 无法用两键表达，作为缺口
+  显式登记；`lue`/`lve`、`luo`/`lo` 与自然碼/微軟的 `lvan`/`luan` 为方案
+  固有碰撞。
   ⚠️ `Custom` 仍依赖宿主装表，addon 尚未提供表路径。
 - 依赖：P0。
 

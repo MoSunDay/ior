@@ -26,10 +26,12 @@
 //! pair the first match wins in this order: (1) a zero-initial entry
 //! whose syllable is keyed by the final code, (2) a multi-letter initial
 //! row (`zh`/`ch`/`sh`), (3) the initial letter itself. Candidates are
-//! filtered through [`crate::syllable::is_syllable`]; the
-//! lexicographically smallest survivor is used. Any unresolvable pair,
-//! odd length, or invalid produced syllable makes the whole transform
-//! return `None`.
+//! filtered through [`crate::syllable::is_syllable`]; among the survivors
+//! the dictionary's canonical ü spelling wins (`lve` over its `lue`
+//! alias, `nve` over `nue`), then the lexicographically smallest. Plain
+//! lexicographic order still decides unrelated sounds such as `luan`
+//! over `lvan`. Any unresolvable pair, odd length, or invalid produced
+//! syllable makes the whole transform return `None`.
 
 use crate::config::DoublePinyin;
 use crate::syllable::is_syllable;
@@ -180,7 +182,7 @@ fn decode_pair(table: &DpTable, initial_key: char, final_key: char) -> Option<St
         .filter(|(k, syllable)| *k == initial_key && finals.iter().any(|f| f == syllable))
         .map(|(_, syllable)| syllable)
         .collect();
-    zero.sort();
+    zero.sort_by(|a, b| compare_syllables(a, b));
     if let Some(syllable) = zero.into_iter().next() {
         return Some(syllable.clone());
     }
@@ -191,7 +193,7 @@ fn decode_pair(table: &DpTable, initial_key: char, final_key: char) -> Option<St
             .map(|f| format!("{initial}{f}"))
             .filter(|s| is_syllable(s))
             .collect();
-        candidates.sort();
+        candidates.sort_by(|a, b| compare_syllables(a, b));
         return candidates.into_iter().next();
     }
     // otherwise the initial code is the initial letter itself; pick the
@@ -201,8 +203,21 @@ fn decode_pair(table: &DpTable, initial_key: char, final_key: char) -> Option<St
         .map(|f| format!("{initial_key}{f}"))
         .filter(|s| is_syllable(s))
         .collect();
-    candidates.sort();
+    candidates.sort_by(|a, b| compare_syllables(a, b));
     candidates.into_iter().next()
+}
+
+/// Candidate order for [`decode_pair`]: the dictionary's canonical ü
+/// spelling (`lve`, `nve`) wins over its `lue`/`nue` alias, then plain
+/// lexicographic order. `lvan` and `luan` are different sounds, so this
+/// deliberately leaves their order lexicographic (`luan` first).
+fn compare_syllables(a: &str, b: &str) -> std::cmp::Ordering {
+    fn canonical_umlaut(s: &str) -> bool {
+        matches!(s, "lve" | "nve")
+    }
+    canonical_umlaut(b)
+        .cmp(&canonical_umlaut(a))
+        .then_with(|| a.cmp(b))
 }
 
 /// Finals keyed by `key`, in table order; `None` when the key is unknown.
@@ -331,6 +346,16 @@ mod tests {
         assert_eq!(to_full(&t, "ni"), None);
         assert_eq!(to_full(&t, ""), None);
     }
+    #[test]
+    fn canonical_umlaut_spelling_beats_the_u_alias() {
+        // `ue`/`ve` share one final key (and `uan`/`van` another): the
+        // canonical `lve` must beat its `lue` alias, while the unrelated
+        // sound `luan` still wins lexicographically over `lvan`.
+        let t = parse_tsv("ue\tt\nve\tt\nuan\tr\nvan\tr\n").expect("alias table");
+        assert_eq!(to_full(&t, "lt").as_deref(), Some("lve"));
+        assert_eq!(to_full(&t, "lr").as_deref(), Some("luan"));
+    }
+
     // ---- real scheme tables (converted from rime schema algebra) ----
 
     const NATURAL: &str = include_str!(concat!(
@@ -393,15 +418,29 @@ mod tests {
             .collect()
     }
 
-    /// Roundtrips every syllable through its scheme code(s). Codes that
-    /// are genuinely shared by two syllables (scheme-inherent collisions
-    /// such as 自然碼's `lo`/`luo` both being typed `lo`) must decode to
-    /// one of the colliding syllables and stay a fixed point.
-    fn roundtrip_scheme(label: &str, text: &str, expected_collisions: &[(&str, &str)]) {
+    /// Roundtrips every syllable through its scheme code(s). `gaps` lists
+    /// readings a scheme's two-key algebra cannot express at all (they must
+    /// have no codes); every other syllable must have codes and every code
+    /// must decode. Codes genuinely shared by two syllables
+    /// (scheme-inherent collisions such as 自然碼's `lo`/`luo` both being
+    /// typed `lo`) must decode to one of the colliding syllables.
+    fn roundtrip_scheme(
+        label: &str,
+        text: &str,
+        gaps: &[&str],
+        expected_collisions: &[(&str, &str)],
+    ) {
         let t = parse_tsv(text).unwrap_or_else(|err| panic!("{label}: {err}"));
         let mut collisions = Vec::new();
         for syll in crate::syllable::SYLLABLES {
             let codes = codes_for(&t, syll);
+            if gaps.contains(syll) {
+                assert!(
+                    codes.is_empty(),
+                    "{label}: gap {syll} unexpectedly has codes {codes:?}"
+                );
+                continue;
+            }
             assert!(!codes.is_empty(), "{label}: no code for {syll}");
             for code in codes {
                 let decoded = to_full(&t, &code)
@@ -428,16 +467,32 @@ mod tests {
 
     #[test]
     fn natural_table_roundtrips_every_syllable() {
-        roundtrip_scheme("natural", NATURAL, &[("luo", "lo")]);
+        // `lue` is the `lve` alias and `luo`/`lo` share a code; `lvan`
+        // shares its code with the common `luan` (different sound, so the
+        // decoder keeps `luan`).
+        roundtrip_scheme(
+            "natural",
+            NATURAL,
+            &[],
+            &[("lue", "lve"), ("luo", "lo"), ("lvan", "luan")],
+        );
     }
 
     #[test]
     fn flypy_table_roundtrips_every_syllable() {
-        roundtrip_scheme("flypy", FLYPY, &[("luo", "lo")]);
+        // No two-key code exists for `lvan` under this algebra.
+        roundtrip_scheme("flypy", FLYPY, &["lvan"], &[("lue", "lve"), ("luo", "lo")]);
     }
 
     #[test]
     fn mspy_table_roundtrips_every_syllable() {
-        roundtrip_scheme("mspy", MSPY, &[("luo", "lo")]);
+        // No two-key code exists for `eh` under this algebra; `lvan`
+        // shares its code with `luan` (see the natural test).
+        roundtrip_scheme(
+            "mspy",
+            MSPY,
+            &["eh"],
+            &[("lue", "lve"), ("luo", "lo"), ("lvan", "luan")],
+        );
     }
 }
