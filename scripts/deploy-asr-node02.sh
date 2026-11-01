@@ -83,7 +83,14 @@ run 'set -e
 # 特权下降入口：解析 vllm 账号家目录里的入口二进制并以该账号执行。
 BIN=/home/vllm/.local/bin/vllm
 [ -x "$BIN" ] || BIN=$(command -v vllm || echo /usr/bin/vllm)
-exec sudo -H -u vllm "$BIN" "$@"
+# sudo env_reset 会剥离 systemd 传入的环境，这里显式转发白名单变量
+#（模型源开关；VLLM_API_KEY 供需要鉴权时在 unit 里注入）。
+PASS=""
+for v in VLLM_USE_MODELSCOPE VLLM_API_KEY; do
+  eval "val=\${$v:-}"
+  [ -n "$val" ] && PASS="$PASS $v=\"$val\""
+done
+exec sudo -H -u vllm env $PASS "$BIN" "$@"
 ENT
   sudo chmod 755 /usr/local/bin/vllm-entrypoint'
 
@@ -93,10 +100,26 @@ ENT
 # 注意：sudo env_reset 会丢弃环境变量，镜像索引用 --index-url 参数传入。
 PIP_FLAGS=""
 [ -n "$PIP_INDEX" ] && PIP_FLAGS="--index-url $PIP_INDEX"
-run "sudo -H -u vllm python3 -m pip install --user 'vllm>=0.11' $PIP_FLAGS &&
+# modelscope SDK 是 VLLM_USE_MODELSCOPE 下载路径的运行时依赖（vllm 不自带）。
+run "sudo -H -u vllm python3 -m pip install --user 'vllm>=0.11' modelscope $PIP_FLAGS &&
   sudo -H -u vllm /home/vllm/.local/bin/vllm --version 2>/dev/null | head -1"
 
-# 3) 写 systemd 单元并拉起（模型首启时经 ModelScope 下载，耗时数分钟）。
+# 3) 模型预下载到本地目录。vllm 启动时的在线存在性检查会直连
+#    huggingface.co（VLLM_USE_MODELSCOPE 也拦不住该路径），HF 不可达时
+#    卡在重试；本地目录 serving 完全离线且确定性最高。--served-model-name
+#    保持原模型 id，与 ior 侧 llm.asr.model 配置一致。
+ASR_DIR="$ASR_MODEL"; ASR_SERVED="$ASR_MODEL"
+case "$ASR_MODEL" in /*) ;; *)
+  ASR_DIR="/home/vllm/models/${ASR_MODEL##*/}"
+  run "sudo -H -u vllm python3 -c 'from modelscope.hub.snapshot_download import snapshot_download as d; d(\"$ASR_MODEL\", local_dir=\"$ASR_DIR\")'"
+;; esac
+LLM_DIR="$LLM_MODEL"; LLM_SERVED="$LLM_MODEL"
+if [ "$WITH_LLM" = 1 ]; then case "$LLM_MODEL" in /*) ;; *)
+  LLM_DIR="/home/vllm/models/${LLM_MODEL##*/}"
+  run "sudo -H -u vllm python3 -c 'from modelscope.hub.snapshot_download import snapshot_download as d; d(\"$LLM_MODEL\", local_dir=\"$LLM_DIR\")'"
+;; esac; fi
+
+# 4) 写 systemd 单元并拉起。
 install_unit() { # install_unit <name> <port> <model> <extra>
   local name="$1" port="$2" model="$3" extra="$4"
   printf '\n==> install %s (%s :%s)\n' "$name" "$model" "$port"
@@ -105,10 +128,12 @@ install_unit() { # install_unit <name> <port> <model> <extra>
 }
 
 UTIL="${GPU_UTIL:-$(awk -v g="$GPU" 'BEGIN{printf "%.2f", (g>16?0.90:0.60)}')}"
-install_unit ior-asr "$ASR_PORT" "$ASR_MODEL" "--gpu-memory-utilization $UTIL $ASR_ARGS"
-[ "$WITH_LLM" = 1 ] && install_unit ior-llm "$LLM_PORT" "$LLM_MODEL" "--gpu-memory-utilization 0.35"
+install_unit ior-asr "$ASR_PORT" "$ASR_DIR" \
+  "--served-model-name $ASR_SERVED --gpu-memory-utilization $UTIL $ASR_ARGS"
+[ "$WITH_LLM" = 1 ] && install_unit ior-llm "$LLM_PORT" "$LLM_DIR" \
+  "--served-model-name $LLM_SERVED --gpu-memory-utilization 0.35"
 
-# 4) 冒烟：等 /v1/models 就绪（首次要下载模型权重，这里最多等 15 分钟）。
+# 5) 冒烟：等 /v1/models 就绪（首次要加载权重，这里最多等 15 分钟）。
 smoke() { # smoke <port> <label>
   printf '==> waiting for :%s (%s) ...\n' "$1" "$2"
   for _ in $(seq 1 90); do

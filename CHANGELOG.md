@@ -4,6 +4,21 @@
 
 ## [Unreleased]
 
+### 候选对齐 rime：前缀跨度瀑布 + 部分上屏 + 候选窗口扩容
+
+- 逻辑对齐 rime `script_translator`：整词候选之后，按最优切分的**前缀
+  跨度**递减（`k = len-1 .. 1`，长词优先）追加词条候选——`nihao` 在
+  `你好` 等整词之后继续给出 `ni` 的同音字 你/拟/尼/泥/呢…，列表不再
+  只有整词+1 条拼字结果；跨度组内用户词优先（与整词组同一规则）。
+- **部分上屏**：选中只覆盖前缀的候选（含 beam 部分解）只上屏该词，
+  未覆盖字母留在编辑区继续输入（选 你 后 preedit 剩 `hao`）；学习按
+  跨度 key（`ni`）记录。覆盖前缀由候选 `pinyin` 字面匹配推导，
+  简拼/前缀兜底等非字面 key 仍整体上屏，行为不变。
+- 候选窗口：`FLAT_CANDIDATE_LIMIT` 10 → 50，`max_candidates` 默认
+  10 → 50（engine-core 与 ior-config 两处默认同步，README 示例更新），
+  page_size 5 下可翻 10 页，对齐 rime 菜单多页候选的观感。
+- 新增 `crates/engine-core/tests/candidate_spans.rs`（跨度瀑布顺序、
+  多音节跨度、部分上屏、边界分隔符吞并、跨度用户词优先、50 条窗口）。
 ### 翻页键可配：对齐 rime key_binder（FFI v2 增补，19/29 符号）
 
 - 配置：`[engine] prev_page_keys`/`next_page_keys`（键名数组，默认
@@ -68,6 +83,32 @@
 - `cargo test --workspace` 343/343（ior-config 38+1、voice 27、
   fcitx5-ior 43 等）；clippy `-D warnings`、fmt、行数门禁全绿；
   C++ 侧 cmake+ninja 构建通过，`libior.so` 导出 10 个 voice 符号。
+
+#### 实测修正（2026-11-01，node02 真实部署）
+- **vLLM JSON 信封兼容**：vLLM 0.11+ 对 `response_format=text` 实际
+  返回 `{"text":...,"usage":...}`，`voice::asr::transcribe` 增加回退：
+  响应以 `{` 开头时按 JSON 抽 `text` 字段；新增回归测试
+  `transcribe_extracts_text_from_a_json_envelope`（voice crate 27→29）。
+- `voice_state::take_text` 文档注释修正：缓冲区保留（返回借用切片），
+  one-shot 交付由 `poll` 的 `has_text` 门控，非 take 清空语义。
+- 部署脚本加固（`scripts/deploy-asr-node02.sh`）：pip 必须以 `vllm`
+  用户安装（root 的 `~/.local` 对降权后不可见）；sudo `env_reset` 会
+  剥掉环境变量 → wrapper 显式白名单转发 `VLLM_USE_MODELSCOPE`/
+  `VLLM_API_KEY`；vLLM 启动时的 HF 在线存在性检查绕过
+  `VLLM_USE_MODELSCOPE` → 预先 `modelscope snapshot_download` 到
+  `/home/vllm/models/<name>` 并 serve 本地目录 + `--served-model-name`；
+  新增 `--gpu-util`/`--asr-args`/`--pip-index` 旗标（whisper 需
+  `max_num_batched_tokens ≥ 1500`）。
+- **node02 实况**：8GB 4060 Ti 被 llama-server 常驻 ~6GB，默认
+  Qwen3-ASR-4B 放不下 → 以 `openai-mirror/whisper-small`（0.17 gpu-util
+  + eager + 448 ctx + 1 seq + 1600 batched tokens）落地，服务 active、
+  4.2 s 中文音频端到端 ~2 s；润色可复用节点上 8081 口 llama-server
+  （零新增显存）。whisper-small 对 espeak 机器音有幻觉（识别成字幕署名），
+  管线正确、音源受限；完整记录见 `docs/NODE02-DEPLOY.md`（新增 8GB
+  共享卡配方节）、`docs/VOICE-VERIFY.md`（新增实测结果节）。
+- 宿主直驱 C ABI 验证：ctypes 按 thin-shell 相同调用序驱动
+  `libior_engine.so`（null-safety×11、热键元数据、toggle→stop→poll→
+  take_text、cancel 路径）全过，含真实 node02 端点的端到端转写。
 
 
 ### 前批：Rime 对标第一批（P0–P4 + preset vocabulary + LM）

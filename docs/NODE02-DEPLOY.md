@@ -87,6 +87,38 @@ scripts/deploy-asr-node02.sh m@node02 --with-llm
   # 本机：export IOR_ASR_API_KEY=...（建议放 ~/.profile 或 systemd --user 环境）
   ```
 
+## 8GB 共享卡实测配方（2026-11-01 node02）
+
+node02 实际是 8GB RTX 4060 Ti 且被 llama-server 等常驻占用 ~6GB，
+默认的 Qwen3-ASR-4B（bf16 ~8GB）跑不动。小模型替代配方（已验证）：
+
+```sh
+scripts/deploy-asr-node02.sh node02 \
+  --asr-model openai-mirror/whisper-small \
+  --gpu-util 0.17 \
+  --asr-args "--enforce-eager --max-model-len 448 --max-num-seqs 1 --max-num-batched-tokens 1600" \
+  --pip-index https://mirrors.aliyun.com/pypi/simple/
+```
+
+实测要点（脚本已内置前两条）：
+
+- **pip 直连 pypi 仅 ~20 KB/s**，必须 `--pip-index` 国内源；vLLM 全家
+  ~7.9GB，实测 ~1h。ModelScope 权重下载反而有 15+ MB/s。
+- **模型预下载到本地目录再 serve**：vLLM 启动时的在线存在性检查会
+  直连 huggingface.co（`VLLM_USE_MODELSCOPE` 拦不住该路径），HF 不可
+  达时会卡重试循环；脚本先用 `modelscope snapshot_download` 落到
+  `/home/vllm/models/<name>` 并以本地路径 + `--served-model-name <id>`
+  启动（模型名仍与 ior 配置一致）。
+- **whisper 系列需 `--max-num-batched-tokens ≥ 1500`**（30 s 音频的
+  token 数），否则启动报错。
+- `--gpu-util` 按**空闲**显存折算（vLLM 校验的是 free/total），剩余
+  1.4GB 时 0.17 可行（weights 0.56 + KV 0.7 GiB）。
+- vLLM 0.11+ 对 `response_format=text` 仍返回 `{"text":...}` JSON
+  信封——`voice::asr` 已兼容（plain text 与 JSON 均解）。
+- 润色可**复用**节点上已有的 llama-server（如 8081 口的
+  Qwen3.5-9B）：把 `[llm] endpoint` 指过去即可，零新增显存；注意
+  thinking 模型润色延迟偏高，`docs/VOICE-VERIFY.md` 清单第 10 项。
+
 ## 故障排查
 
 | 症状 | 排查 |

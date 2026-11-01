@@ -54,11 +54,22 @@ pub fn transcribe(settings: &AsrSettings, wav: &[u8]) -> Result<String, String> 
             response.body.trim()
         ));
     }
-    let text = response.body.trim();
+    // `response_format=text` asks for a bare transcript, but some
+    // OpenAI-compatible servers (vLLM 0.11+) always answer with a JSON
+    // envelope; fall back to pulling `text` out of it.
+    let body = response.body.trim();
+    let text = if body.starts_with('{') {
+        crate::json::extract_string_field(body, "text")
+            .unwrap_or_default()
+            .trim()
+            .to_string()
+    } else {
+        body.to_string()
+    };
     if text.is_empty() {
         return Err("asr returned an empty transcript".to_string());
     }
-    Ok(text.to_string())
+    Ok(text)
 }
 
 /// `Authorization: Bearer <key>` from the variable named by
@@ -154,6 +165,34 @@ mod tests {
              RIFF\r\n\
              --BND--\r\n"
         );
+    }
+
+    #[test]
+    fn transcribe_extracts_text_from_a_json_envelope() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut sock, _) = listener.accept().expect("accept");
+            let mut got = vec![0u8; 65536];
+            let _ = sock.read(&mut got);
+            // vLLM 0.11+ replies with a JSON envelope even for
+            // response_format=text; the transcript lives in "text".
+            let body = "{\"text\":\"你好，语音测试。\",\"usage\":{\"seconds\":5}}";
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            sock.write_all(response.as_bytes()).expect("write");
+        });
+        let result = transcribe(
+            &settings(&format!("http://127.0.0.1:{port}/v1/audio/transcriptions")),
+            b"RIFF-stub",
+        );
+        server.join().expect("server thread");
+        assert_eq!(result.expect("transcript"), "你好，语音测试。");
     }
 
     #[test]

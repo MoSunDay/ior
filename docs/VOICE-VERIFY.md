@@ -70,3 +70,61 @@ curl -s http://node02:8000/v1/audio/transcriptions \
 | 10 | `[llm] enabled = true`（润色开）重复 #3 | 上屏为润色后文本；停 8001 服务则回退原文 |
 
 截图/输出记录贴到本节下方（真机执行后补）。
+
+## 四、实际部署与验证结果（2026-11-01，headless）
+
+### node02 服务（真实部署，非桩）
+
+node02 实为 8GB RTX 4060 Ti **共享节点**（llama-server 常驻 5.4GB +
+桌面应用 0.5GB，仅剩 ~1.4GB 空闲），跑不动默认的 Qwen3-ASR-4B。按
+`docs/NODE02-DEPLOY.md` 的 8GB 配方部署 `openai-mirror/whisper-small`：
+
+```sh
+scripts/deploy-asr-node02.sh node02 \
+  --asr-model openai-mirror/whisper-small \
+  --gpu-util 0.17 \
+  --asr-args "--enforce-eager --max-model-len 448 --max-num-seqs 1 --max-num-batched-tokens 1600" \
+  --pip-index https://mirrors.aliyun.com/pypi/simple/
+```
+
+- vLLM 0.31.0 / `ior-asr.service` active：weights 0.56GiB + KV 0.7GiB，
+  恰好落在 0.17×7.6GiB 预算内（日志：`Free memory ... 1.39/7.6 GiB`）。
+- 冒烟（本机直连，含 4.2 s 中文 wav）：
+
+  ```
+  $ curl http://node02:8000/v1/models
+  {"object":"list","data":[{"id":"openai-mirror/whisper-small",...}]}
+  $ curl http://node02:8000/v1/audio/transcriptions \
+      -F model=openai-mirror/whisper-small -F language=zh \
+      -F response_format=text -F file=@/tmp/ior-voice-test.wav
+  {"text":"(字幕製作:貝爾)","usage":{"type":"duration","seconds":5}}   # 2.0 s
+  ```
+
+  注意两点：vLLM 0.11+ 对 `response_format=text` 仍回 JSON 信封（已让
+  `voice::asr` 兼容两种响应，见回归测试 `transcribe_extracts_text_from_
+  a_json_envelope`）；whisper-small 对 espeak 合成的机器音会幻觉（识别成
+  字幕署名），**管线正确、音源受限**——生产质量按默认配置走
+  Qwen3-ASR-4B / 大显存，或真人语音 + whisper-large-v3-turbo。
+
+### 宿主直驱 C ABI（不依赖 fcitx5/桌面）
+
+`target/release/libior_engine.so`（cdylib）+ Python ctypes 按薄壳完全
+相同的调用序驱动，配置即 `~/.config/fcitx5/ior/config.toml`
+（`capture_command = "cat /tmp/ior-voice-test.wav"` 桩麦克风、真实
+node02 端点）：
+
+| 检查 | 结果 |
+|------|------|
+| 11 个 voice 符号 null-engine 调用不崩 | PASS |
+| hotkey 元数据（keysym 0x60 / mods 4 / toggle / `ctrl+\``） | PASS |
+| toggle→recording(1)→stop→transcribing(2)→poll→idle(0) | PASS |
+| 转写文本经 take_text 取出（JSON 信封正确解出） | PASS |
+| take_text 后 poll 保持 0（one-shot 语义由 poll 门控） | PASS |
+| cancel：toggle→cancel→idle，poll 不产出 | PASS |
+
+### 待办（需用户配合）
+
+- 第三节十项真机清单：等用户给时间窗执行（期间不重启其 fcitx5）。
+- `/usr/lib/.../libior.so` 已更新为含 JSON 信封解析的构建
+  （md5 `2c599d2a`），但**运行中的 fcitx5 仍映射旧版**，下次自然重启
+  生效；验证清单执行时一并 `fcitx5 --replace`。

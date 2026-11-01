@@ -168,7 +168,10 @@ pub fn poll(runtime: &mut VoiceRuntime) -> u32 {
     u32::from(runtime.has_text)
 }
 
-/// Takes the finished transcript ("" when none). One-shot.
+/// Returns the latest transcript ("" before the first one). Delivery is
+/// one-shot via `poll`'s ready flag: the buffer itself stays until the
+/// next result overwrites it (the returned `&str` borrows it), so only
+/// call this after `poll` reported 1.
 pub fn take_text(runtime: &mut VoiceRuntime) -> &str {
     runtime.has_text = false;
     runtime.text_buf.to_str().unwrap_or("")
