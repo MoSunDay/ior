@@ -187,20 +187,22 @@ void IorEngine::keyEvent(const fcitx::InputMethodEntry& /*entry*/,
         shiftUsed_ = true;
     }
 
-    // Candidate paging while composing (the engine paginates cyclically;
-    // without a composition Page_Up/Down belong to the application).
-    if (sym == FcitxKey_Page_Up || sym == FcitxKey_Page_Down) {
-        if (ior_engine_preedit(raw_)[0] == '\0') {
+    // Configurable paging keys ([engine] prev/next_page_keys; PageUp/Down
+    // and '-'/'=' by default) act only while composing — idle they keep
+    // their application/punctuation meaning, matching rime's
+    // `when: paging` / `when: has_menu` bindings. Paging stays cyclic.
+    if (ior_engine_preedit(raw_)[0] != '\0') {
+        const auto pageDir = ior_engine_page_key_direction(raw_, sym);
+        if (pageDir != 0) {
+            if (pageDir < 0) {
+                ior_engine_page_prev(raw_);
+            } else {
+                ior_engine_page_next(raw_);
+            }
+            keyEvent.filterAndAccept();
+            updateUI(*ic);
             return;
         }
-        if (sym == FcitxKey_Page_Up) {
-            ior_engine_page_prev(raw_);
-        } else {
-            ior_engine_page_next(raw_);
-        }
-        keyEvent.filterAndAccept();
-        updateUI(*ic);
-        return;
     }
 
     // Idle gate: letters may start a composition; in Chinese mode

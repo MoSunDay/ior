@@ -171,7 +171,7 @@ pub struct Fuzzy {
 }
 
 /// The `[engine]` section (mirrors `engine_core::config::EngineConfig`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Engine {
     /// Shift behavior on Chinese -> English (`commit` | `temp` | `none`).
     pub shift_action: ShiftAction,
@@ -187,6 +187,10 @@ pub struct Engine {
     pub page_size: usize,
     /// Hard cap on candidates per request.
     pub max_candidates: usize,
+    /// Keysym names that page candidates backwards while composing.
+    pub prev_page_keys: Vec<String>,
+    /// Keysym names that page candidates forwards while composing.
+    pub next_page_keys: Vec<String>,
     /// `[engine.fuzzy]` toggles.
     pub fuzzy: Fuzzy,
 }
@@ -202,6 +206,8 @@ impl Default for Engine {
             user_learning: true,
             page_size: 5,
             max_candidates: 10,
+            prev_page_keys: vec!["Page_Up".into(), "minus".into()],
+            next_page_keys: vec!["Page_Down".into(), "equal".into()],
             fuzzy: Fuzzy::default(),
         }
     }
@@ -380,6 +386,30 @@ pub fn to_table(config: &Config) -> Table {
         "max_candidates".into(),
         Value::Int(config.engine.max_candidates as i64),
     );
+    engine.insert(
+        "prev_page_keys".into(),
+        Value::Array(
+            config
+                .engine
+                .prev_page_keys
+                .iter()
+                .cloned()
+                .map(Value::Str)
+                .collect(),
+        ),
+    );
+    engine.insert(
+        "next_page_keys".into(),
+        Value::Array(
+            config
+                .engine
+                .next_page_keys
+                .iter()
+                .cloned()
+                .map(Value::Str)
+                .collect(),
+        ),
+    );
     let mut fuzzy = Table::new();
     for (name, on) in [
         ("z_zh", config.engine.fuzzy.z_zh),
@@ -487,6 +517,8 @@ mod tests {
         assert!(c.engine.chinese_punct);
         assert_eq!(c.engine.shift_action, ShiftAction::Commit);
         assert_eq!(c.engine.double_pinyin, DoublePinyin::Off);
+        assert_eq!(c.engine.prev_page_keys, ["Page_Up", "minus"]);
+        assert_eq!(c.engine.next_page_keys, ["Page_Down", "equal"]);
         assert_eq!(c.engine.fuzzy, Fuzzy::default());
         assert_eq!(c.switches, default_switches());
         assert!(c.punct.is_empty());
@@ -523,7 +555,7 @@ mod tests {
     fn to_table_covers_every_field() {
         let table = to_table(&Config::default());
         let engine = table.get_table("engine").expect("engine");
-        assert_eq!(engine.len(), 8);
+        assert_eq!(engine.len(), 10);
         for key in [
             "shift_action",
             "enter_action",
@@ -532,6 +564,8 @@ mod tests {
             "user_learning",
             "page_size",
             "max_candidates",
+            "prev_page_keys",
+            "next_page_keys",
             "fuzzy",
         ] {
             assert!(engine.get(key).is_some(), "missing engine.{key}");

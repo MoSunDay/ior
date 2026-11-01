@@ -41,6 +41,8 @@ pub struct IorEngine {
     pub commit_taken: bool,
     /// Candidate texts of the **current page**, in display order.
     pub candidates_buf: Vec<CString>,
+    /// Resolved paging keysyms (prev/next) for the C++ shell.
+    pub page_keys: crate::keysym::PageKeys,
     /// Voice-input runtime (hotkey state machine + worker handle).
     pub voice: voice_state::VoiceRuntime,
 }
@@ -103,6 +105,7 @@ pub fn new_engine_with_voice(
     lm_model: Option<GramModel>,
     voice_settings: voice_settings::VoiceSettings,
 ) -> IorEngine {
+    let page_keys = crate::keysym::resolve(&engine_config);
     let mut session = session::new_session_with(engine_config, dict);
     session::set_lm(&mut session, lm_model);
     let mut engine = IorEngine {
@@ -111,6 +114,7 @@ pub fn new_engine_with_voice(
         commit_buf: CString::new("").expect("empty CString"),
         commit_taken: false,
         candidates_buf: Vec::new(),
+        page_keys,
         voice: voice_state::new_runtime(voice_settings),
     };
     refresh(&mut engine);
@@ -268,6 +272,8 @@ fn to_engine_config(cfg: &user_config::Config) -> EngineConfig {
         double_pinyin,
         user_learning: cfg.engine.user_learning,
         page_size: cfg.engine.page_size,
+        prev_page_keys: cfg.engine.prev_page_keys.clone(),
+        next_page_keys: cfg.engine.next_page_keys.clone(),
         max_candidates: cfg.engine.max_candidates,
         chinese_punct: cfg.engine.chinese_punct,
         shift_action,
@@ -314,6 +320,11 @@ pub fn page_prev(engine: &mut IorEngine) -> bool {
     let changed = session::prev_page(&mut engine.session);
     refresh(engine);
     changed
+}
+
+/// -1/1/0: whether `keysym` is a configured prev/next page key.
+pub fn page_key_direction(engine: &IorEngine, keysym: u32) -> i32 {
+    crate::keysym::direction(&engine.page_keys, keysym)
 }
 
 /// Packed `(current_page + 1) << 16 | page_count` (0 when there are no
@@ -491,12 +502,15 @@ mod tests {
     /// Engine over the ten-entry dictionary with preedit `raw`.
     fn ma_engine(raw: &str) -> IorEngine {
         let dict = Dictionary::from_tsv(MA_TSV).expect("tsv");
+        let config = core_config::default_config();
+        let page_keys = crate::keysym::resolve(&config);
         let mut engine = IorEngine {
-            session: session::new_session_with(core_config::default_config(), dict),
+            session: session::new_session_with(config, dict),
             preedit_buf: to_cstring(""),
             commit_buf: to_cstring(""),
             commit_taken: false,
             candidates_buf: Vec::new(),
+            page_keys,
             voice: voice_state::new_runtime(voice_settings::settings_from_config(
                 &user_config::Config::default(),
             )),
@@ -538,6 +552,30 @@ mod tests {
         small.session.raw.clear();
         refresh(&mut small);
         assert_eq!(page_info(&small), 0);
+    }
+
+    #[test]
+    fn page_key_direction_follows_config() {
+        // Defaults: minus prev, equal next (rime luna_pinyin bindings);
+        // comma is not a page key.
+        let empty_dict = Dictionary::from_tsv("").expect("empty tsv");
+        let engine = new_engine_with(core_config::default_config(), empty_dict.clone());
+        assert_eq!(page_key_direction(&engine, 0x2D), -1); // minus
+        assert_eq!(page_key_direction(&engine, 0x3D), 1); // equal
+        assert_eq!(page_key_direction(&engine, 0xFF55), -1); // Page_Up
+        assert_eq!(page_key_direction(&engine, 0xFF56), 1); // Page_Down
+        assert_eq!(page_key_direction(&engine, 0x2C), 0); // comma
+
+        // comma/period flip to paging when configured so.
+        let custom = core_config::EngineConfig {
+            prev_page_keys: vec!["comma".into()],
+            next_page_keys: vec!["period".into()],
+            ..core_config::EngineConfig::default()
+        };
+        let engine = new_engine_with(custom, empty_dict);
+        assert_eq!(page_key_direction(&engine, 0x2C), -1);
+        assert_eq!(page_key_direction(&engine, 0x2E), 1);
+        assert_eq!(page_key_direction(&engine, 0x2D), 0, "minus freed");
     }
 
     #[test]

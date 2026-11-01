@@ -21,7 +21,7 @@ M0 词级链路之后，M1/M2a 已完成，M2b/M3/M3.5/P5-lite 主体落地；`c
   拼写前缀回退（`nih` → 你会/你好）；
 - 用户词典：快照 + append-log + 压实 + 30 天半衰期衰减 + TSV 导入导出，
   addon 四路学习均落盘；
-- 交互：core 分页 / PageUp/Down / 候选索引直选、Shift 三态、中文标点、
+- 交互：core 分页 / 可配翻页键（默认 PageUp/Down 与 -/=）/ 候选索引直选、Shift 三态、中文标点、
   FFI v2（18 符号），GTK/Qt/XIM 真机回归通过；
 - 配置：`$XDG_CONFIG_HOME/fcitx5/ior/config.toml`（自研 TOML 子集，零依赖），
   addon 启动时映射到 `EngineConfig`。
@@ -57,7 +57,7 @@ M0 词级链路之后，M1/M2a 已完成，M2b/M3/M3.5/P5-lite 主体落地；`c
 | 4 | 配置/方案体系 | YAML + schema + custom patch + 部署/重编译 | `ior-config` TOML/schema/patch 已接线启动；switches/punct 未生效、无热重载/UI | 🟡 中 |
 | 5 | 用户词典 | LevelDB userdb：持久化、词频自适应、自动造词（句子回填）、云 sync | 快照/日志/衰减/压实/TSV 已落地；自动造词待实现 | 🟢 小 |
 | 6 | 中英/全半角/标点/简繁 | switches + punct 翻译器 + OpenCC | 中文标点 + 引号配对、编译期简体（OpenCC t2s）已落地；全半角、ascii_punct、运行时简繁切换缺 | 🟡 中 |
-| 7 | 候选交互 | 翻页键可配、以词定字、长词优先、逐键提示、Enter 上屏原码、光标移动 | 分页/翻页/索引直选已落地；Enter 可配、以词定字、光标/长词优先/逐键提示缺 | 🟡 中 |
+| 7 | 候选交互 | 翻页键可配、以词定字、长词优先、逐键提示、Enter 上屏原码、光标移动 | 分页/翻页/索引直选/翻页键可配（prev/next_page_keys，默认 PageUp/Down+-/=，仅候选窗激活时生效）已落地；以词定字、光标移动、长词优先、逐键提示缺 | 🟡 中 |
 | 8 | 宿主集成 | per-IC 状态、状态区、per-app、配置 UI、quickphrase | 单引擎实例共享所有 IC（M0 已知串扰风险）、无状态区、Configurable=False | 🟡 中 |
 | 9 | 特殊输入 | 符号面板 /fh、日期时间、中文数字、u 反查、emoji | 全部缺失（M4 计划中） | 🟢 小 |
 | 10 | 预测/联想 | predict 插件 + userdb 共现 | 无 | 🟢 小 |

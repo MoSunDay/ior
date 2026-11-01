@@ -4,6 +4,20 @@
 
 ## [Unreleased]
 
+### 翻页键可配：对齐 rime key_binder（FFI v2 增补，19/29 符号）
+
+- 配置：`[engine] prev_page_keys`/`next_page_keys`（键名数组，默认
+  `["Page_Up", "minus"]` / `["Page_Down", "equal"]`，即 rime luna_pinyin
+  默认绑定；空数组可禁用该方向，未知键名忽略并告警）。
+- 仅候选窗激活时生效（对齐 rime `when: paging`/`has_menu`）：空闲时
+  -/= 等仍走中文标点或透传给应用，PageUp/Down 归属原键义。
+- addon 新增 `keysym.rs`（键名 → X keysym 小表 + 解析/去重/方向判定，
+  未知键名 stderr 告警忽略）。
+- FFI 新增 `ior_engine_page_key_direction`（纯查询：-1 上一页 / 1 下一页
+  / 0 非翻页键，null-safe，不改状态）。
+- C++ 薄壳改用该符号路由翻页键（原硬编码 Page_Up/Page_Down），翻页
+  保持 core 循环分页语义。
+
 ### 语音输入 V1：ctrl+` 按键说话 + node02 远端 Qwen ASR（+可选润色）
 
 规划与验证记录见 `docs/NODE02-DEPLOY.md`、`docs/VOICE-VERIFY.md`。

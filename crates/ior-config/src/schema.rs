@@ -87,6 +87,12 @@ fn parse_engine(value: &Value, warnings: &mut Vec<String>) -> Result<Engine, Str
             "max_candidates" => {
                 engine.max_candidates = expect_count(value, "engine.max_candidates")?
             }
+            "prev_page_keys" => {
+                engine.prev_page_keys = expect_str_array(value, "engine.prev_page_keys")?
+            }
+            "next_page_keys" => {
+                engine.next_page_keys = expect_str_array(value, "engine.next_page_keys")?
+            }
             "fuzzy" => engine.fuzzy = parse_fuzzy(value, warnings)?,
             other => warnings.push(format!("unknown key 'engine.{other}'")),
         }
@@ -298,6 +304,30 @@ fn expect_count(value: &Value, path: &str) -> Result<usize, String> {
     }
 }
 
+/// Array of non-empty strings (keysym names); an empty array disables
+/// that paging direction.
+fn expect_str_array(value: &Value, path: &str) -> Result<Vec<String>, String> {
+    match value {
+        Value::Array(items) => {
+            let mut out = Vec::new();
+            for item in items {
+                match item {
+                    Value::Str(s) if !s.is_empty() => out.push(s.clone()),
+                    Value::Str(_) => return Err(format!("{path}: expected no empty strings")),
+                    other => {
+                        return Err(format!(
+                            "{path}: array items must be strings, got {}",
+                            kind(other)
+                        ))
+                    }
+                }
+            }
+            Ok(out)
+        }
+        other => Err(format!("{path}: expected an array, got {}", kind(other))),
+    }
+}
+
 /// A string that must be non-empty (hotkeys, commands, model ids).
 fn expect_nonempty_str<'v>(value: &'v Value, path: &str) -> Result<&'v str, String> {
     let text = expect_str(value, path)?;
@@ -433,6 +463,68 @@ mod tests {
         assert_eq!(
             from_table(&t).unwrap_err(),
             "engine: expected a table, got integer"
+        );
+    }
+
+    #[test]
+    fn page_keys_parse_and_validate() {
+        // Valid arrays override the defaults (rime luna_pinyin style).
+        let mut t = default_table();
+        t.get_table_mut("engine").unwrap().insert(
+            "prev_page_keys".into(),
+            Value::Array(vec![
+                Value::Str("comma".into()),
+                Value::Str("Page_Up".into()),
+            ]),
+        );
+        t.get_table_mut("engine").unwrap().insert(
+            "next_page_keys".into(),
+            Value::Array(vec![Value::Str("period".into())]),
+        );
+        let loaded = from_table(&t).expect("page keys");
+        assert_eq!(loaded.config.engine.prev_page_keys, ["comma", "Page_Up"]);
+        assert_eq!(loaded.config.engine.next_page_keys, ["period"]);
+
+        // An empty array is legal: it disables that paging direction.
+        let mut t = default_table();
+        t.get_table_mut("engine")
+            .unwrap()
+            .insert("prev_page_keys".into(), Value::Array(Vec::new()));
+        assert!(from_table(&t)
+            .unwrap()
+            .config
+            .engine
+            .prev_page_keys
+            .is_empty());
+
+        // Non-array and non-string items are errors.
+        let mut t = default_table();
+        t.get_table_mut("engine")
+            .unwrap()
+            .insert("next_page_keys".into(), Value::Str("Page_Down".into()));
+        assert_eq!(
+            from_table(&t).unwrap_err(),
+            "engine.next_page_keys: expected an array, got string"
+        );
+
+        let mut t = default_table();
+        t.get_table_mut("engine").unwrap().insert(
+            "prev_page_keys".into(),
+            Value::Array(vec![Value::Str("minus".into()), Value::Int(1)]),
+        );
+        assert_eq!(
+            from_table(&t).unwrap_err(),
+            "engine.prev_page_keys: array items must be strings, got integer"
+        );
+
+        let mut t = default_table();
+        t.get_table_mut("engine").unwrap().insert(
+            "prev_page_keys".into(),
+            Value::Array(vec![Value::Str(String::new())]),
+        );
+        assert_eq!(
+            from_table(&t).unwrap_err(),
+            "engine.prev_page_keys: expected no empty strings"
         );
     }
 

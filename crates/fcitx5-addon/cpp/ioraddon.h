@@ -57,6 +57,8 @@ const char* ior_engine_take_commit(IorEngineC* engine);
 int32_t ior_engine_page_next(IorEngineC* engine);
 int32_t ior_engine_page_prev(IorEngineC* engine);
 uint32_t ior_engine_page_info(const IorEngineC* engine);
+// -1 prev / 1 next / 0 not a page key (config: [engine] prev/next_page_keys)
+int32_t ior_engine_page_key_direction(const IorEngineC* engine, uint32_t keysym);
 const char* ior_engine_select(IorEngineC* engine, uint32_t page_local_index);
 uint32_t ior_engine_ascii_mode(const IorEngineC* engine);
 uint32_t ior_engine_set_ascii_mode(IorEngineC* engine, uint32_t enable);

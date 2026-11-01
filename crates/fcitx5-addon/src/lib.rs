@@ -20,8 +20,8 @@
 //!   are undefined behavior.
 //! - Every entry point tolerates a null engine (process_key returns -1,
 //!   preedit/take_commit/select return "", candidate_count/page_info/
-//!   ascii_mode return 0, page_next/page_prev return 0, candidate returns
-//!   null, userdb_save/load/decay return -1).
+//!   ascii_mode return 0, page_next/page_prev/page_key_direction return
+//!   0, candidate returns null, userdb_save/load/decay return -1).
 //! - Candidate symbols expose the **current page** only; paging is cyclic
 //!   (`page_next`/`page_prev`, snapshot via `page_info`), clicks commit via
 //!   `select(page_local_index)`, and the Chinese/English mode pair is
@@ -49,6 +49,7 @@
 pub mod engine_state;
 pub mod ffi;
 pub mod ffi_voice;
+mod keysym;
 pub mod voice_settings;
 mod voice_state;
 pub mod voice_worker;

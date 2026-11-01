@@ -92,6 +92,12 @@ pub struct EngineConfig {
     pub user_learning: bool,
     /// Candidate page size (used by frontends, not by core decoding).
     pub page_size: usize,
+    /// Keysym names frontends treat as paging-while-composing keys
+    /// (frontend concern, like `page_size`).
+    pub prev_page_keys: Vec<String>,
+    /// Keysym names frontends treat as paging-while-composing keys
+    /// (frontend concern, like `page_size`).
+    pub next_page_keys: Vec<String>,
     /// Hard cap on how many candidates are produced per request.
     pub max_candidates: usize,
     /// Chinese punctuation mapping: when true (and the session is in
@@ -113,6 +119,8 @@ impl Default for EngineConfig {
             double_pinyin: DoublePinyin::Off,
             user_learning: true,
             page_size: 5,
+            prev_page_keys: vec!["Page_Up".into(), "minus".into()],
+            next_page_keys: vec!["Page_Down".into(), "equal".into()],
             max_candidates: 10,
             chinese_punct: true,
             shift_action: ShiftAction::CommitRaw,
@@ -185,6 +193,8 @@ mod tests {
         assert_eq!(c.page_size, 5);
         assert_eq!(c.max_candidates, 10);
         assert!(c.user_learning);
+        assert_eq!(c.prev_page_keys, ["Page_Up", "minus"]);
+        assert_eq!(c.next_page_keys, ["Page_Down", "equal"]);
     }
 
     #[test]

@@ -18,6 +18,7 @@
 //! int32_t     ior_engine_page_next(IorEngineC*);        // ABI v2
 //! int32_t     ior_engine_page_prev(IorEngineC*);        // ABI v2
 //! uint32_t    ior_engine_page_info(const IorEngineC*);  // ABI v2
+//! int32_t     ior_engine_page_key_direction(const IorEngineC*, uint32_t keysym); // v2
 //! const char* ior_engine_select(IorEngineC*, uint32_t page_local_index); // v2
 //! uint32_t    ior_engine_ascii_mode(const IorEngineC*); // ABI v2
 //! uint32_t    ior_engine_set_ascii_mode(IorEngineC*, uint32_t enable);   // v2
@@ -28,8 +29,8 @@
 //! uint32_t   ior_engine_abi_version(void);
 //! ```
 //!
-//! 18 exported symbols in total, plus the 10 `ior_engine_voice_*`
-//! symbols declared in [`crate::ffi_voice`] (28 overall; ABI stays at
+//! 19 exported symbols in total, plus the 10 `ior_engine_voice_*`
+//! symbols declared in [`crate::ffi_voice`] (29 overall; ABI stays at
 //! version 2, additive-only).
 //!
 //! # Contract
@@ -37,7 +38,8 @@
 //! - `ior_engine_new` returns null only on allocation failure; every other
 //!   function accepts null (process_key returns -1, preedit/take_commit/
 //!   select return "", candidate_count/page_info/ascii_mode return 0,
-//!   page_next/page_prev return 0, candidate returns null).
+//!   page_next/page_prev/page_key_direction return 0, candidate returns
+//!   null).
 //! - `ior_engine_process_key` takes an X11 keysym and returns `0` = forward
 //!   to the application, `1` = consumed while editing, `2` = committed (the
 //!   host should then call `ior_engine_take_commit`).
@@ -363,6 +365,20 @@ pub unsafe extern "C" fn ior_engine_page_prev(engine: *mut IorEngine) -> i32 {
 #[no_mangle]
 pub unsafe extern "C" fn ior_engine_page_info(engine: *const IorEngine) -> u32 {
     as_ref(engine).map_or(0, engine_state::page_info)
+}
+
+/// -1 = configured prev-page key, 1 = next-page key, 0 = neither
+/// (also for a null engine). Pure query: no state change.
+///
+/// # Safety
+///
+/// `engine` must be null or a live pointer from `ior_engine_new`.
+#[no_mangle]
+pub unsafe extern "C" fn ior_engine_page_key_direction(
+    engine: *const IorEngine,
+    keysym: u32,
+) -> i32 {
+    as_ref(engine).map_or(0, |engine| engine_state::page_key_direction(engine, keysym))
 }
 
 /// Commits the candidate at `page_local_index` of the **current page**
@@ -724,6 +740,10 @@ mod tests {
         assert_eq!(unsafe { ior_engine_page_next(std::ptr::null_mut()) }, 0);
         assert_eq!(unsafe { ior_engine_page_prev(std::ptr::null_mut()) }, 0);
         assert_eq!(unsafe { ior_engine_page_info(std::ptr::null()) }, 0);
+        assert_eq!(
+            unsafe { ior_engine_page_key_direction(std::ptr::null(), 0xFF55) },
+            0
+        );
         assert_eq!(
             text(unsafe { ior_engine_select(std::ptr::null_mut(), 0) }),
             ""

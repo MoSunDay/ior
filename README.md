@@ -95,6 +95,8 @@ scripts/deploy-asr-node02.sh m@node02 --with-llm
 [engine]
 double_pinyin = "natural"  # off | natural | xiaohe | mspy | custom
 page_size = 5
+prev_page_keys = ["Page_Up", "minus"]    # 翻页键可配（rime 风格，仅候选窗激活时生效）
+next_page_keys = ["Page_Down", "equal"]
 max_candidates = 10
 chinese_punct = true
 user_learning = true
