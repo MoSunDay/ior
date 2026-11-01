@@ -48,8 +48,10 @@
    `CandidateWord` 为抽象类（需实现 `select` 的子类，顺带获得候选点选提交）。
 4. **`FCITX_ADDON_DIRS` 语义**：是覆盖系统扫描路径而非追加，
    指向仅含 ior 的目录会导致 `libwayland.so` 等系统 addon 全部失载。
-5. **Enter 语义**：预编辑激活时 Enter 被引擎消费用于上屏（不透传），
-   自动化脚本需在提交后再补一次 Enter 关闭对话框/结束行。
+5. **Enter 语义**：预编辑激活时 Enter 上屏拼音原码（默认
+   `engine.enter_action = "raw"`；`candidate` 可恢复旧行为=同空格上屏首选
+   汉字），空格上屏首选汉字；Enter 在提交时仍被消费、不透传换行，无预编辑
+   时才透传，自动化脚本需在提交后再补一次 Enter 关闭对话框/结束行。
 6. **用户级安装限制**：`~/.local/lib/fcitx5` 不在 5.1.7 的 addon 库
    搜索路径中（元数据目录 `~/.local/share/fcitx5/addon` 可被发现但库
    定位失败），故采用系统级 `/usr` 安装。

@@ -4,7 +4,7 @@
 //! collected as warnings instead of failing the load.
 
 use crate::model::{
-    default_switches, Config, DoublePinyin, Engine, Fuzzy, PunctValue, ShiftAction,
+    default_switches, Config, DoublePinyin, Engine, EnterAction, Fuzzy, PunctValue, ShiftAction,
 };
 use crate::value::{kind, Table, Value};
 
@@ -56,6 +56,14 @@ fn parse_engine(value: &Value, warnings: &mut Vec<String>) -> Result<Engine, Str
                     "engine.shift_action",
                     &["commit", "temp", "none"],
                     ShiftAction::parse,
+                )?
+            }
+            "enter_action" => {
+                engine.enter_action = parse_enum(
+                    value,
+                    "engine.enter_action",
+                    &["raw", "candidate"],
+                    EnterAction::parse,
                 )?
             }
             "double_pinyin" => {

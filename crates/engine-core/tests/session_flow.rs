@@ -1,7 +1,7 @@
 //! End-to-end M0 session flows: typing, preedit, candidate selection,
 //! passthrough, fuzzy matching, learning and crash-resistance.
 
-use engine_core::config::{default_config, EngineConfig};
+use engine_core::config::{default_config, EngineConfig, EnterAction};
 use engine_core::dict::Dictionary;
 use engine_core::session::{
     self, new_session, new_session_with, preedit, process_key, ProcessResult,
@@ -111,6 +111,49 @@ fn undecodable_input_passes_through_verbatim() {
     assert_eq!(
         process_key(&mut s, ' '),
         ProcessResult::Committed("xyz".to_string())
+    );
+    assert_eq!(preedit(&s), "");
+}
+
+#[test]
+fn enter_commits_typed_pinyin_verbatim() {
+    let mut s = new_session(default_config());
+    for ch in "nihao".chars() {
+        assert_eq!(process_key(&mut s, ch), ProcessResult::Editing);
+    }
+    assert_eq!(
+        process_key(&mut s, '\n'),
+        ProcessResult::Committed("nihao".to_string())
+    );
+    assert_eq!(preedit(&s), "");
+    // Empty composition: Enter belongs to the application again.
+    assert_eq!(process_key(&mut s, '\n'), ProcessResult::Forwarded);
+}
+
+#[test]
+fn enter_keeps_typed_separators() {
+    let mut s = new_session(default_config());
+    for ch in "ni'hao".chars() {
+        assert_eq!(process_key(&mut s, ch), ProcessResult::Editing);
+    }
+    assert_eq!(
+        process_key(&mut s, '\r'),
+        ProcessResult::Committed("ni'hao".to_string())
+    );
+    assert_eq!(preedit(&s), "");
+}
+
+#[test]
+fn enter_candidate_mode_matches_space() {
+    let mut cfg = default_config();
+    cfg.enter_action = EnterAction::CommitBest;
+    let mut s = new_session(cfg);
+    for ch in "nihao".chars() {
+        assert_eq!(process_key(&mut s, ch), ProcessResult::Editing);
+    }
+    assert_eq!(
+        process_key(&mut s, '\n'),
+        ProcessResult::Committed("你好".to_string())
     );
     assert_eq!(preedit(&s), "");
 }

@@ -100,7 +100,7 @@ v2 相对 v1 的变化：
 | XIM | `xterm`（`XMODIFIERS=@im=fcitx`） | 同上；退格缩短 preedit，Esc 清空 |
 
 补充：`xian` 应出「现 / 先 / 西安」（音节歧义）；预编辑激活时 Enter
-被消费用于上屏（预期行为）。
+被消费用于上屏拼音原码（默认 `engine.enter_action = "raw"`，预期行为）。
 
 ## 薄壳实现要点（防止回归）
 

@@ -200,6 +200,10 @@ fn to_engine_config(cfg: &user_config::Config) -> EngineConfig {
         user_config::ShiftAction::Temp => core_config::ShiftAction::CommitBest,
         user_config::ShiftAction::Drop => core_config::ShiftAction::Clear,
     };
+    let enter_action = match cfg.engine.enter_action {
+        user_config::EnterAction::Raw => core_config::EnterAction::CommitRaw,
+        user_config::EnterAction::Candidate => core_config::EnterAction::CommitBest,
+    };
     let double_pinyin = match cfg.engine.double_pinyin {
         user_config::DoublePinyin::Off => core_config::DoublePinyin::Off,
         user_config::DoublePinyin::Natural => core_config::DoublePinyin::Natural,
@@ -225,6 +229,7 @@ fn to_engine_config(cfg: &user_config::Config) -> EngineConfig {
         max_candidates: cfg.engine.max_candidates,
         chinese_punct: cfg.engine.chinese_punct,
         shift_action,
+        enter_action,
     }
 }
 

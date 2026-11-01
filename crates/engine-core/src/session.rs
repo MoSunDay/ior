@@ -10,7 +10,7 @@
 //! only through `&mut Session`, and reports what the frontend should do
 //! with the key.
 
-use crate::config::{DoublePinyin, EngineConfig, ShiftAction};
+use crate::config::{DoublePinyin, EngineConfig, EnterAction, ShiftAction};
 use crate::decoder::{self, Candidate};
 use crate::dict::Dictionary;
 use crate::double_pinyin::{self, DpTable};
@@ -124,7 +124,8 @@ pub fn process_key(s: &mut Session, ch: char) -> ProcessResult {
             }
         }
         '0'..='9' => handle_digit(s, ch),
-        ' ' | '\n' | '\r' => handle_commit_or_passthrough(s),
+        ' ' => handle_commit_or_passthrough(s),
+        '\n' | '\r' => handle_enter(s),
         '\u{8}' | '\u{7f}' => {
             if s.raw.is_empty() {
                 ProcessResult::Forwarded
@@ -161,7 +162,7 @@ fn handle_digit(s: &mut Session, ch: char) -> ProcessResult {
     select_flat(s, s.page * page_size(s) + offset)
 }
 
-/// Space/enter: commit the top candidate, or pass the raw letters through
+/// Space: commit the top candidate, or pass the raw letters through
 /// when nothing can be decoded (typed `'` separators are dropped).
 fn handle_commit_or_passthrough(s: &mut Session) -> ProcessResult {
     if s.raw.is_empty() {
@@ -175,6 +176,25 @@ fn handle_commit_or_passthrough(s: &mut Session) -> ProcessResult {
             reset_composition(s);
             ProcessResult::Committed(text)
         }
+    }
+}
+
+/// Enter: commit the typed letters verbatim so Latin text can be
+/// entered without leaving Chinese mode; no learning applies.
+/// `EnterAction::CommitBest` takes the Space path instead, and an
+/// empty composition forwards Enter so applications still receive
+/// the newline.
+fn handle_enter(s: &mut Session) -> ProcessResult {
+    if s.raw.is_empty() {
+        return ProcessResult::Forwarded;
+    }
+    match s.config.enter_action {
+        EnterAction::CommitRaw => {
+            let text = s.raw.clone();
+            reset_composition(s);
+            ProcessResult::Committed(text)
+        }
+        EnterAction::CommitBest => handle_commit_or_passthrough(s),
     }
 }
 

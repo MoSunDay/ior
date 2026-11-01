@@ -96,6 +96,7 @@ max_candidates = 10
 chinese_punct = true
 user_learning = true
 shift_action = "commit"    # commit | temp | none
+enter_action = "raw"       # raw（回车上屏拼音原码）| candidate（同空格上屏首选）
 
 # 只写想改的项，其余取默认（模糊音默认全关）
 [engine.fuzzy]

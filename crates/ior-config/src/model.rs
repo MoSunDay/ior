@@ -40,6 +40,38 @@ impl ShiftAction {
     }
 }
 
+/// `engine.enter_action`: what Enter does to the un-committed preedit.
+/// Mirrors engine-core's `EnterAction`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EnterAction {
+    /// `"raw"`: commit the typed letters verbatim
+    /// (engine-core `EnterAction::CommitRaw`).
+    #[default]
+    Raw,
+    /// `"candidate"`: commit the top candidate, the Space path
+    /// (engine-core `EnterAction::CommitBest`).
+    Candidate,
+}
+
+impl EnterAction {
+    /// Canonical TOML string.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            EnterAction::Raw => "raw",
+            EnterAction::Candidate => "candidate",
+        }
+    }
+
+    /// Parses one of `"raw"` | `"candidate"`.
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "raw" => Some(EnterAction::Raw),
+            "candidate" => Some(EnterAction::Candidate),
+            _ => None,
+        }
+    }
+}
+
 /// `engine.double_pinyin`: mirrors engine-core's `DoublePinyin`. The
 /// builtin schemes decode through the tables converted from the rime
 /// schema algebra (`data/double-pinyin/*.tsv`); `custom` decodes via a
@@ -113,6 +145,8 @@ pub struct Fuzzy {
 pub struct Engine {
     /// Shift behavior on Chinese -> English (`commit` | `temp` | `none`).
     pub shift_action: ShiftAction,
+    /// Enter behavior on the un-committed preedit (`raw` | `candidate`).
+    pub enter_action: EnterAction,
     /// Double-pinyin mode (`off` | `custom`).
     pub double_pinyin: DoublePinyin,
     /// Chinese punctuation mapping enabled.
@@ -132,6 +166,7 @@ impl Default for Engine {
     fn default() -> Self {
         Engine {
             shift_action: ShiftAction::default(),
+            enter_action: EnterAction::default(),
             double_pinyin: DoublePinyin::default(),
             chinese_punct: true,
             user_learning: true,
@@ -194,6 +229,10 @@ pub fn to_table(config: &Config) -> Table {
     engine.insert(
         "shift_action".into(),
         Value::Str(config.engine.shift_action.as_str().to_string()),
+    );
+    engine.insert(
+        "enter_action".into(),
+        Value::Str(config.engine.enter_action.as_str().to_string()),
     );
     engine.insert(
         "double_pinyin".into(),
@@ -305,9 +344,10 @@ mod tests {
     fn to_table_covers_every_field() {
         let table = to_table(&Config::default());
         let engine = table.get_table("engine").expect("engine");
-        assert_eq!(engine.len(), 7);
+        assert_eq!(engine.len(), 8);
         for key in [
             "shift_action",
+            "enter_action",
             "double_pinyin",
             "chinese_punct",
             "user_learning",

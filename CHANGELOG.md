@@ -6,6 +6,30 @@
 
 规划全貌见 `docs/ROADMAP-RIME-PARITY.md`；本批覆盖 P0 / P5-lite / P3 / P1 / P2 / P4，并补齐 Rime preset vocabulary 的部署语义。
 
+### Enter 上屏原始拼音（2026-11-01）
+- 新默认语义：预编辑激活时 Enter 把已输入的拼音原码原样上屏（含已敲入的
+  `'` 分隔符），不进用户词典学习，可在中文模式下直接落拉丁字母；空格仍
+  上屏首选汉字；预编辑为空时 Enter 透传给应用（换行不受影响）。
+- 配置链路：`engine.enter_action = "raw" | "candidate"`（默认 `raw`；
+  `candidate` 恢复旧行为=与空格一致上屏首选），贯穿 engine-core
+  `EnterAction`（`session::handle_enter`）、ior-config model/schema
+  （默认表新增该键）、fcitx5-addon `to_engine_config` 映射。
+- 文档与路线图同步：README 配置示例、`docs/ROADMAP-RIME-PARITY.md`
+  （「Enter 行为可配 / Enter 上屏原码」标记 ✅）、
+  `docs/M0-FRONTEND-TEST.md`、`crates/fcitx5-addon/cpp/README.md`。
+- 回归单测：`session_flow.rs` 新增 Enter 原码上屏 + 空预编辑透传、`'`
+  分隔符原样保留、`candidate` 模式同空格三例；ior-config schema 增
+  `enter_action` 非法值用例；`cargo test --workspace` 299/299 通过。
+- 重装 `libior.so`（md5 `e7cdf52ab3cc9d2f5fbd353e423a70f6`）后 fcitx5
+  真机复核：GTK3（zenity）`nihao`+Enter→`nihao`、`nihao`+空格→`你好`、
+  `ni'hao`+Enter→`ni'hao`、`vk`+Enter→`vk`；XIM（xterm）单行组合
+  `nihao`+Enter、`nihao`+空格 → `nihao你好`（行尾 Enter 透传结束行）；
+  `engine.enter_action = "candidate"` 写入 config.toml 重启后
+  `nihao`+Enter→`你好`，删配置重启还原默认。
+- 复核方法备忘：`fcitx5-remote -s ior` 仅作用于当前聚焦 IC，自动化脚本
+  必须在目标窗口聚焦注册 IC 之后再切换、并断言 `fcitx5-remote -n`＝`ior`
+  （本机新窗口默认 IC 是 rime，其 Enter 同样上屏原码，不断言极易误判）。
+
 ### 音节表补全与 houxuanci 回归（2026-11-01）
 - `engine-core` 的 `SYLLABLES` 由 403 补到 425：依据 bundled luna_pinyin
   增补 22 个读音（`xuan`、`zen`、`kui`、`dei`、`nang`、`eng`、`lve`、`nun`、

@@ -37,6 +37,8 @@
 //! # Schema keys (defaults mirror `engine_core::config`)
 //! - `engine.shift_action` — `"commit"` | `"temp"` | `"none"`
 //!   (↔ engine-core `ShiftAction::CommitRaw` / `CommitBest` / `Clear`)
+//! - `engine.enter_action` — `"raw"` | `"candidate"`
+//!   (↔ engine-core `EnterAction::CommitRaw` / `CommitBest`)
 //! - `engine.double_pinyin` — `"off"` | `"natural"` | `"xiaohe"`
 //!   (alias `"flypy"`) | `"mspy"` | `"custom"`
 //! - `engine.chinese_punct`, `engine.user_learning` — booleans
@@ -65,8 +67,8 @@ mod lex;
 
 pub use error::ParseError;
 pub use model::{
-    default_switches, default_table, to_table, Config, DoublePinyin, Engine, Fuzzy, PunctValue,
-    ShiftAction,
+    default_switches, default_table, to_table, Config, DoublePinyin, Engine, EnterAction, Fuzzy,
+    PunctValue, ShiftAction,
 };
 pub use parser::{is_bare_key, parse};
 pub use patch::{apply, apply_with_warnings, merge_tables, serialize_config, serialize_table};

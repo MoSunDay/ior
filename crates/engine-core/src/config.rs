@@ -63,6 +63,22 @@ pub enum ShiftAction {
     Clear,
 }
 
+/// What Enter does to the un-committed preedit while a composition is
+/// active (see `session::process_key`). The common IME contract: Space
+/// commits the top Chinese candidate while Enter commits the typed
+/// letters verbatim, so Latin text can be entered without a mode
+/// switch; the legacy "Enter behaves exactly like Space" stays
+/// reachable via `CommitBest`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EnterAction {
+    /// Commit the raw (typed) buffer as-is, apostrophes included.
+    #[default]
+    CommitRaw,
+    /// Commit the top candidate (learning applies); raw text as
+    /// fallback — the same path Space takes.
+    CommitBest,
+}
+
 /// Top-level engine settings.
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
@@ -85,6 +101,9 @@ pub struct EngineConfig {
     /// How Shift leaving Chinese mode handles the un-committed preedit:
     /// commit it raw, commit the best candidate, or clear it.
     pub shift_action: ShiftAction,
+    /// What Enter does to the un-committed preedit: commit the typed
+    /// letters raw, or take the Space path and commit the top candidate.
+    pub enter_action: EnterAction,
 }
 
 impl Default for EngineConfig {
@@ -97,6 +116,7 @@ impl Default for EngineConfig {
             max_candidates: 10,
             chinese_punct: true,
             shift_action: ShiftAction::CommitRaw,
+            enter_action: EnterAction::CommitRaw,
         }
     }
 }
