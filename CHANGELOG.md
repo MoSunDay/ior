@@ -2,6 +2,45 @@
 
 本项目所有显著变更记录于此。格式参考 Keep a Changelog，版本遵循 SemVer。
 
+## [Unreleased] - Rime 对标第一批（P0 / P5-lite / P3）
+
+规划全貌见 `docs/ROADMAP-RIME-PARITY.md`；本批落地「若只能先做三件事」的全部三项。
+
+### P0 = M1：词库二进制与加载
+- `.ior` 格式升级 **v2**：13 字节头 + key 索引区（varint 长度前缀、key 升序去重）+ 值区
+  （freq 降序），freq 采用 LEB128 varint；读取端 v1/v2 双兼容，损坏输入报偏移与条目上下文。
+- `engine-core`：`Dictionary::from_ior_bytes` / `from_ior_layers`（base→领域→用户多词典叠加，
+  freq 求和）；core 自带最小 reader，仍零依赖、无 unsafe；`builtin` TSV 保留为回退。
+- `dict-tools`：新增 `compile`（ior TSV / rime dict.yaml 表自动识别 → .ior v2）与
+  `validate`（结构校验，`--dump-syllables` 导出音节清单）；新增 `source.rs` / `varint.rs` 模块。
+- 新增 `ior-bench` crate（自研 Instant 计时，不引 criterion）：10 万词编译 **125 ms**
+  （目标 <1s）、加载中位 26.7 ms、lookup **P99 0.39 µs**（目标 <10 µs）。
+- `data/README.md`：v2 字节布局规范与 rime 词库导入示例。
+
+### P5-lite = M4 先行项：分页 / Shift 中英 / 中文标点
+- `engine-core`：`Session` 增加分页状态（`page_count/current_page/next_page/prev_page/
+  select_flat`，`page_size` 真正生效，数字键按当前页偏移选词，改码页归零）；
+  `process_shift` 中英切换（`ShiftAction::{CommitRaw,CommitBest,Clear}` 三态可配）；
+  新增 `punct.rs` 数据驱动中文标点（含 “” ‘’ 配对交替、全角映射，`chinese_punct` 开关）。
+- FFI 升级 **ABI v2**（9→18 符号）：翻页 `page_next/prev/page_info`、候选点击改
+  `ior_engine_select`（页内索引直提，修复翻页错位）、`ascii_mode/set_ascii_mode`、
+  Shift/PageUp/PageDown keysym、userdb 三符号（见 P3）。
+- C++ 薄壳：候选点击不再合成数字键；Page_Up/Down 翻页；Shift 释放且未作修饰时切换中英；
+  候选列表页大小统一为引擎当前页（消除 5 vs 10 不一致）。
+
+### P3 = M3：用户词典持久化
+- `engine-core`（无 I/O，只收/回 bytes）：`user_dict_store.rs` —— 快照
+  `to_snapshot/from_snapshot`（`# ior userdb v1` TSV）、append-only 日志
+  `log_line/replay`、压实 `compact`（幂等）、时间衰减 `decay`（整数次减半、零频清除）、
+  云备份 `export_tsv/import_tsv`、合并 `absorb`。
+- addon 层：`ior_engine_userdb_save/load/decay`；C++ 侧 userdb 路径
+  `$XDG_DATA_HOME/fcitx5/ior/userdb.tsv`，启动按 mtime 差做 30 天半衰期衰减；
+  全部四条学习路径（键盘提交/候选点选/Shift 切换附带提交/析构兜底）均落盘快照
+  （快照即压实，失败静默不阻断输入）。
+
+### 验证
+- `cargo test --workspace`：**158/158** 通过（M0 基线 78 → +80）；`clippy -D warnings`、
+  `cargo fmt --check` 全绿；fcitx5 C++ 薄壳 cmake 构建链接通过，`nm -D` 确认 18 符号导出。
 ## [0.1.0-m0] - 2026-10-31
 
 M0 里程碑：引擎骨架 + fcitx5 薄壳 + 词级转换全链路打通，GTK/Qt/XIM 三前端
