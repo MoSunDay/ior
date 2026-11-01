@@ -60,6 +60,8 @@ fn main() {
         ("full jintian", EngineConfig::default(), "jintian"),
         ("full nihao", EngineConfig::default(), "nihao"),
         ("full zhongguo", EngineConfig::default(), "zhongguo"),
+        ("full houxuanci", EngineConfig::default(), "houxuanci"),
+        ("full xuanze", EngineConfig::default(), "xuanze"),
         (
             "full sentence 1",
             EngineConfig::default(),
