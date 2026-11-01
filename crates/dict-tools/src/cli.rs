@@ -22,6 +22,10 @@ pub enum Command {
         input_b: String,
         output: String,
     },
+    /// `compile <in> <out.ior>` (ior TSV or rime dict.yaml)
+    Compile { input: String, output: String },
+    /// `validate <in> [--dump-syllables]`
+    Validate { input: String, dump_syllables: bool },
     /// `-h` / `--help`
     Help,
 }
@@ -39,13 +43,19 @@ SUBCOMMANDS:
     export <in.ior> <out.tsv>           dump .ior binary back to TSV
     merge   <a.ior> <b.ior> -o <out.ior>
                                         merge two .ior files (freq-sum, sorted)
+    compile <in> <out.ior>              parse+validate+normalize (ior TSV or
+                                        rime dict.yaml), write .ior v2
+    validate <in> [--dump-syllables]    structural check only; optionally list
+                                        the distinct syllables of the input
 
 OPTIONS:
     -h, --help                          print this help
 
 NOTES:
-    TSV lines are 'pinyin<TAB>hanzi<TAB>freq'; freq defaults to 1.
-    Pinyin is lowercased; spaces or quotes separate syllables.
+    'compile'/'validate' auto-detect the input: ior TSV lines are
+    'pinyin<TAB>hanzi<TAB>freq'; rime dict.yaml tables start after a line
+    containing exactly '...' with 'hanzi<TAB>pinyin<TAB>weight' rows.
+    build/compile lowercase pinyin; spaces or quotes separate syllables.
 
 EXIT CODES:
     0 ok   1 usage error   2 io error   3 format error";
@@ -92,8 +102,42 @@ pub fn parse_args(args: &[String]) -> Result<Command, String> {
             Ok(Command::Export { input, output })
         }
         "merge" => parse_merge(rest),
+        "compile" => {
+            let [input, output] = two_positional(rest, "compile <in> <out.ior>")?;
+            Ok(Command::Compile { input, output })
+        }
+        "validate" => parse_validate(rest),
         other => Err(format!("unknown subcommand '{other}' (try --help)")),
     }
+}
+
+/// Parse `validate <in> [--dump-syllables]` (flag order is free).
+fn parse_validate(args: &[String]) -> Result<Command, String> {
+    let usage_line = "validate <in> [--dump-syllables]";
+    let mut input: Option<String> = None;
+    let mut dump_syllables = false;
+    for arg in args {
+        match arg.as_str() {
+            "--dump-syllables" => dump_syllables = true,
+            other if !other.starts_with('-') => {
+                if input.replace(other.to_string()).is_some() {
+                    return Err(format!(
+                        "unexpected extra argument '{other}': dict-tools {usage_line}"
+                    ));
+                }
+            }
+            other => {
+                return Err(format!("unknown flag '{other}': dict-tools {usage_line}"));
+            }
+        }
+    }
+    let Some(input) = input else {
+        return Err(format!("expected: dict-tools {usage_line}"));
+    };
+    Ok(Command::Validate {
+        input,
+        dump_syllables,
+    })
 }
 
 /// Require exactly one positional argument.
@@ -233,7 +277,77 @@ fn execute<W: Write>(command: &Command, out: &mut W) -> Result<(), Error> {
                 ),
             )
         }
+        Command::Compile { input, output } => {
+            let text = read_text(input)?;
+            let source = crate::source::load_source(&text)
+                .map_err(|err| Error::Format(format!("{input}: {err}")))?;
+            let entries = format::normalize(source.entries);
+            let bytes = format::serialize(&entries);
+            write_bytes(output, &bytes)?;
+            let keys = distinct_keys(&entries);
+            report(
+                out,
+                &format!(
+                    "compiled {output} from {} source: {keys} keys, {} entries, {} bytes (.ior v{})",
+                    source.format.name(),
+                    entries.len(),
+                    bytes.len(),
+                    format::VERSION
+                ),
+            )?;
+            report_duplicate_note(out, source.duplicate_pairs)
+        }
+        Command::Validate {
+            input,
+            dump_syllables,
+        } => {
+            let text = read_text(input)?;
+            let source = crate::source::load_source(&text)
+                .map_err(|err| Error::Format(format!("{input}: {err}")))?;
+            let keys = distinct_keys(&source.entries);
+            writeln!(
+                out,
+                "ok: {input}: {} source, {keys} keys, {} entries, {} distinct syllables",
+                source.format.name(),
+                source.entries.len(),
+                source.syllables.len()
+            )
+            .map_err(io_error)?;
+            report_duplicate_note(out, source.duplicate_pairs)?;
+            if *dump_syllables {
+                write!(
+                    out,
+                    "{}",
+                    crate::source::render_syllables(&source.syllables)
+                )
+                .map_err(io_error)?;
+            }
+            Ok(())
+        }
     }
+}
+
+/// Count distinct pinyin keys among `entries` (normalize output is sorted,
+/// so equal keys are adjacent).
+fn distinct_keys(entries: &[Entry]) -> usize {
+    entries
+        .windows(2)
+        .filter(|pair| pair[0].pinyin != pair[1].pinyin)
+        .count()
+        + usize::from(!entries.is_empty())
+}
+
+/// Print the duplicate-aggregation note when there is anything to report.
+fn report_duplicate_note<W: Write>(out: &mut W, duplicate_pairs: usize) -> Result<(), Error> {
+    if duplicate_pairs > 0 {
+        report(
+            out,
+            &format!(
+                "note: {duplicate_pairs} duplicate (pinyin,hanzi) pair(s) aggregated by freq sum"
+            ),
+        )?;
+    }
+    Ok(())
 }
 
 /// Print the highest-frequency entries (stable tiebreak on pinyin, hanzi).

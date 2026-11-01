@@ -18,6 +18,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ior-bench"
+version = "0.1.0"
+dependencies = [
+ "dict-tools",
+ "engine-core",
+]
+
+[[package]]
 name = "llm"
 version = "0.1.0"
 

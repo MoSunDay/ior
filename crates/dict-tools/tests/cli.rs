@@ -10,6 +10,7 @@ use std::path::PathBuf;
 // Hanzi via escapes to keep this source file ASCII.
 const KAI: &str = "\u{5f00}\u{53d1}"; // kai fa
 const CHENG: &str = "\u{7a0b}\u{5e8f}"; // cheng xu
+const CE: &str = "\u{6d4b}\u{8bd5}"; // ce shi
 
 /// Unique per-test scratch file inside a per-process temp directory.
 fn temp_path(name: &str) -> PathBuf {
@@ -182,4 +183,235 @@ fn parse_args_accepts_merge_flag_after_positionals() {
             output: "c.ior".into()
         })
     );
+}
+
+// ---------------------------------------------------------------------------
+// compile
+// ---------------------------------------------------------------------------
+
+/// A minimal rime dict.yaml: everything before `...` is skipped, table rows
+/// are `hanzi<TAB>pinyin<TAB>weight` (space-separated pinyin tolerated).
+const RIME_SAMPLE: &str = "\
+# Rime dictionary
+name: luna_pinyin.my
+version: \"0.9\"
+sort: original
+...
+\u{5f00}\u{53d1}\tkai fa\t500
+\u{7a0b}\u{5e8f}\tcheng'xu\t400
+\u{6d4b}\u{8bd5}\tce shi
+";
+
+#[test]
+fn compile_rime_yaml_to_v2_and_roundtrip() {
+    let input = temp_path("rime-in.yaml");
+    let output = temp_path("rime-out.ior");
+    fs::write(&input, RIME_SAMPLE).expect("write rime sample");
+
+    let mut out = Vec::new();
+    let args = arg_list(&["compile", input.to_str().unwrap(), output.to_str().unwrap()]);
+    assert_eq!(cli::run(&args, &mut out), 0);
+    let report = String::from_utf8(out).expect("compile report");
+    assert!(report.contains("rime-dict.yaml"), "{report}");
+    assert!(report.contains("3 keys"), "{report}");
+    assert!(report.contains("3 entries"), "{report}");
+
+    let bytes = fs::read(&output).expect("read compiled .ior");
+    assert_eq!(bytes[4], 2, "compile must emit v2");
+    let entries = format::deserialize(&bytes).expect("deserialize v2");
+    assert_eq!(entries.len(), 3);
+    // canonical ordering: key asc, then freq desc
+    assert_eq!(entries[0].pinyin, "ce'shi");
+    assert_eq!(entries[0].freq, 1);
+    assert_eq!(entries[1].pinyin, "cheng'xu");
+    assert_eq!(entries[1].hanzi, CHENG);
+    assert_eq!(entries[2].pinyin, "kai'fa");
+    assert_eq!(entries[2].hanzi, KAI);
+    assert_eq!(entries[2].freq, 500);
+
+    fs::remove_file(&input).ok();
+    fs::remove_file(&output).ok();
+}
+
+/// v1 legacy file -> deserialize -> export -> compile back to v2.
+#[test]
+fn compile_roundtrips_a_legacy_v1_file() {
+    fn v1_bytes(entries: &[format::Entry]) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(b"IORD");
+        out.push(1);
+        out.extend_from_slice(&u32::try_from(entries.len()).unwrap().to_le_bytes());
+        for entry in entries {
+            for field in [&entry.pinyin, &entry.hanzi] {
+                out.extend_from_slice(&u32::try_from(field.len()).unwrap().to_le_bytes());
+                out.extend_from_slice(field.as_bytes());
+            }
+            out.extend_from_slice(&entry.freq.to_le_bytes());
+        }
+        out
+    }
+
+    let legacy = vec![
+        format::Entry {
+            pinyin: "kai'fa".into(),
+            hanzi: KAI.into(),
+            freq: 500,
+        },
+        format::Entry {
+            pinyin: "cheng'xu".into(),
+            hanzi: CHENG.into(),
+            freq: 400,
+        },
+    ];
+    let v1_path = temp_path("legacy-v1.ior");
+    let tsv_path = temp_path("legacy-back.tsv");
+    let v2_path = temp_path("legacy-v2.ior");
+    fs::write(&v1_path, v1_bytes(&legacy)).expect("write v1 file");
+    assert_eq!(fs::read(&v1_path).unwrap()[4], 1);
+
+    // legacy file still loads through the shared flow
+    let count = export(&v1_path, &tsv_path);
+    assert_eq!(count, 2);
+
+    let mut out = Vec::new();
+    let args = arg_list(&[
+        "compile",
+        tsv_path.to_str().unwrap(),
+        v2_path.to_str().unwrap(),
+    ]);
+    assert_eq!(cli::run(&args, &mut out), 0);
+    let bytes = fs::read(&v2_path).expect("read v2 file");
+    assert_eq!(bytes[4], 2, "recompiled file must be v2");
+    // compile normalizes: same set, key-ascending order
+    let mut expected = legacy;
+    expected.sort_by(|a, b| a.pinyin.cmp(&b.pinyin));
+    assert_eq!(format::deserialize(&bytes).unwrap(), expected);
+
+    fs::remove_file(&v1_path).ok();
+    fs::remove_file(&tsv_path).ok();
+    fs::remove_file(&v2_path).ok();
+}
+
+#[test]
+fn compile_rejects_structural_errors_with_line_numbers() {
+    let bad = temp_path("compile-bad.tsv");
+    let target = temp_path("compile-bad.ior");
+
+    // non-pinyin alphabet on line 2 (after a comment)
+    fs::write(&bad, "# header\nl\u{fc}\t\u{5415}\t3\n").expect("write bad tsv");
+    let mut out = Vec::new();
+    let args = arg_list(&["compile", bad.to_str().unwrap(), target.to_str().unwrap()]);
+    assert_eq!(cli::run(&args, &mut out), 3);
+    assert!(!target.exists(), "failed compile must not write output");
+
+    // freq 0 on line 1
+    fs::write(&bad, format!("a\t{KAI}\t0\n")).expect("write zero freq");
+    let mut out = Vec::new();
+    let args = arg_list(&["compile", bad.to_str().unwrap(), target.to_str().unwrap()]);
+    assert_eq!(cli::run(&args, &mut out), 3);
+
+    // rime table row missing its pinyin column
+    fs::write(&bad, "...\n\u{5f00}\u{53d1}\n").expect("write broken rime row");
+    let mut out = Vec::new();
+    let args = arg_list(&["compile", bad.to_str().unwrap(), target.to_str().unwrap()]);
+    assert_eq!(cli::run(&args, &mut out), 3);
+
+    fs::remove_file(&bad).ok();
+}
+
+// ---------------------------------------------------------------------------
+// validate
+// ---------------------------------------------------------------------------
+
+#[test]
+fn validate_reports_stats_and_duplicate_note() {
+    let input = temp_path("validate-ok.tsv");
+    fs::write(
+        &input,
+        format!("kai'fa\t{KAI}\t100\nkai'fa\t{KAI}\t50\ncheng'xu\t{CHENG}\n"),
+    )
+    .expect("write input");
+
+    let mut out = Vec::new();
+    let args = arg_list(&["validate", input.to_str().unwrap()]);
+    assert_eq!(cli::run(&args, &mut out), 0);
+    let report = String::from_utf8(out).expect("validate report");
+    assert!(report.contains("ok:"), "{report}");
+    assert!(report.contains("2 keys"), "{report}");
+    assert!(report.contains("3 entries"), "{report}");
+    assert!(
+        report.contains("1 duplicate (pinyin,hanzi) pair"),
+        "{report}"
+    );
+
+    fs::remove_file(&input).ok();
+}
+
+#[test]
+fn validate_dump_syllables_lists_sorted_inventory_with_note() {
+    let input = temp_path("validate-syl.tsv");
+    fs::write(&input, format!("shi\t{CE}\nkai'fa\t{KAI}\n")).expect("write input");
+
+    let mut out = Vec::new();
+    let args = arg_list(&["validate", input.to_str().unwrap(), "--dump-syllables"]);
+    assert_eq!(cli::run(&args, &mut out), 0);
+    let report = String::from_utf8(out).expect("validate report");
+    assert!(report.contains("syllables (3):"), "{report}");
+    let list = report
+        .lines()
+        .find(|line| line.starts_with("  "))
+        .expect("syllable list row");
+    assert_eq!(list, "  fa kai shi");
+    assert!(
+        report.contains("does not embed the engine-core syllable table"),
+        "{report}"
+    );
+
+    fs::remove_file(&input).ok();
+}
+
+#[test]
+fn validate_exits_3_on_rule_violations_with_line_numbers() {
+    let input = temp_path("validate-bad.tsv");
+
+    // consecutive separators, then a non-pinyin character, then freq 0
+    fs::write(
+        &input,
+        format!("ni''hao\t{KAI}\nl\u{fc}\t{CE}\na\t{CHENG}\t0\n"),
+    )
+    .expect("write bad input");
+    let mut out = Vec::new();
+    let args = arg_list(&["validate", input.to_str().unwrap()]);
+    assert_eq!(cli::run(&args, &mut out), 3);
+
+    fs::write(&input, format!("ni'\t{KAI}\n")).expect("write trailing quote");
+    let mut out = Vec::new();
+    let args = arg_list(&["validate", input.to_str().unwrap()]);
+    assert_eq!(cli::run(&args, &mut out), 3);
+
+    // usage error: unknown flag
+    let mut out = Vec::new();
+    let args = arg_list(&["validate", "--bogus", input.to_str().unwrap()]);
+    assert_eq!(cli::run(&args, &mut out), 1);
+
+    fs::remove_file(&input).ok();
+}
+
+#[test]
+fn validate_accepts_rime_sources_and_compile_agrees() {
+    let input = temp_path("validate-rime.yaml");
+    let output = temp_path("validate-rime.ior");
+    fs::write(&input, RIME_SAMPLE).expect("write rime sample");
+
+    let mut out = Vec::new();
+    let args = arg_list(&["validate", input.to_str().unwrap()]);
+    assert_eq!(cli::run(&args, &mut out), 0);
+    assert!(String::from_utf8(out).unwrap().contains("rime-dict.yaml"));
+
+    let mut out = Vec::new();
+    let args = arg_list(&["compile", input.to_str().unwrap(), output.to_str().unwrap()]);
+    assert_eq!(cli::run(&args, &mut out), 0);
+
+    fs::remove_file(&input).ok();
+    fs::remove_file(&output).ok();
 }

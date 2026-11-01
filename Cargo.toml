@@ -6,6 +6,7 @@ members = [
     "crates/fcitx5-addon",
     "crates/voice",
     "crates/llm",
+    "crates/bench",
 ]
 
 [workspace.package]

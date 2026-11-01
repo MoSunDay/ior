@@ -6,12 +6,19 @@
 //!
 //! Layout:
 //! - [`format`]: `Entry`, TSV parsing/rendering, `.ior` binary
-//!   (de)serialization, and deterministic normalization.
+//!   (de)serialization (v2 writer, v1+v2 reader), and deterministic
+//!   normalization.
+//! - [`varint`]: LEB128 u32 varints used by the `.ior` v2 layout.
+//! - [`source`]: input auto-detection (ior TSV vs rime dict.yaml tables)
+//!   and structural validation for `compile`/`validate`.
 //! - [`cli`]: hand-rolled argument parsing (no clap) and command dispatch
-//!   with stable exit codes (0 ok, 1 usage, 2 io, 3 format).
+//!   with stable exit codes (0 ok, 2 io, 3 format).
 
 pub mod cli;
 pub mod format;
+pub mod source;
+pub mod varint;
 
 pub use cli::{parse_args, run, Command, USAGE};
 pub use format::{deserialize, normalize, parse_tsv, serialize, to_tsv, Entry, MAGIC, VERSION};
+pub use source::load_source;
