@@ -242,6 +242,15 @@ mod tests {
         let mut t = default_table();
         t.get_table_mut("engine")
             .unwrap()
+            .insert("enter_action".into(), Value::Str("space".into()));
+        assert_eq!(
+            from_table(&t).unwrap_err(),
+            "engine.enter_action: expected one of \"raw\", \"candidate\", got \"space\""
+        );
+
+        let mut t = default_table();
+        t.get_table_mut("engine")
+            .unwrap()
             .insert("double_pinyin".into(), Value::Str("shuangpin".into()));
         let err = from_table(&t).unwrap_err();
         assert!(err.starts_with("engine.double_pinyin: expected one of"));
