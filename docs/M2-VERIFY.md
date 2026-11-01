@@ -44,7 +44,7 @@ installed: /usr/share/fcitx5/ior/core.gram
 （md5 `38553bed48c87835ab23d8ebd5d731d8` /
 `78e9434cf5bdd05b074dea4d5f05c6d9`），addon 位于
 `/usr/lib/x86_64-linux-gnu/fcitx5/libior.so`
-（md5 `31f32e0d2a86bef75cb271cf66bf317e`）。
+（md5 `8939ce133b11aae1476348c193444ce9`）。
 
 ## 默认简体（`compile --simplify`）
 
@@ -116,6 +116,20 @@ wo'xiang'qu'bei'jing  → 我想去北京
 词库前，遗留的 `tian'qi 蚕戚` 会把旧候选顶到首位，这是 userdb 的预期优先级，
 不是词库回归。测试结束后删除测试 userdb 与临时配置，profile 恢复默认 rime、
 保留 ior 为组内可选 IM。
+
+## 候选窗 preedit（修复客户端内联回显）
+
+旧行为：`updateUI` 调用 `panel.setClientPreedit(...)`，拼音原码被内联绘制到
+客户端文本域，GTK 输入框里会直接出现 `nihao`，与占位符/正文叠加，看起来像
+应用自己在回显输入。
+
+新行为：改用 `panel.setPreedit(...)`，拼音只在候选窗顶部（候选「你好 / 逆号 /
+拟好」上方）显示为带下划线的 `ni'hao`；空 preedit 仍 `panel.reset()`。
+
+本次验证：GTK `zenity --entry` 真机输入 `nihao`，OCR 复核输入框仍为占位符
+`type here`，`ni'hao` 与三条候选全部位于候选窗内，客户端文本域无拼音残留。
+安装后 `/usr/lib/x86_64-linux-gnu/fcitx5/libior.so`
+md5 `8939ce133b11aae1476348c193444ce9`。
 
 ## 门禁
 

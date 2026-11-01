@@ -225,7 +225,10 @@ void IorEngine::updateUI(fcitx::InputContext& ic) {
     if (*preedit == '\0') {
         panel.reset();
     } else {
-        panel.setClientPreedit(
+        // Keep the raw pinyin in the input panel instead of embedding it in
+        // the client's text field; the candidate window still shows the
+        // composition above the candidates.
+        panel.setPreedit(
             fcitx::Text(preedit, fcitx::TextFormatFlag::Underline));
 
         // FFI strings only live until the next ior_* call, so copy them

@@ -106,6 +106,9 @@ v2 相对 v1 的变化：
 
 - 消费按键必须 `keyEvent.filterAndAccept()`：仅 `filter()` 会让原文
   回传应用，造成「原文+上屏」双重投递（实测踩过）。
+- preedit 必须用 `panel.setPreedit(...)`，不要用 `setClientPreedit(...)`：
+  后者把拼音内联进客户端文本域，输入时应用输入框会回显拼音（实测 bug）；
+  改后拼音只在候选窗顶部显示，候选「你好 / 逆号 / 拟好」位于其下。
 - 5.1.x API：`reset(entry, InputContextEvent&)`、
   `create(AddonManager*)`、`FCITX_ADDON_FACTORY(单参)`、
   `CandidateWord` 抽象类需子类实现 `select`。

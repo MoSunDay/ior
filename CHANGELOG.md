@@ -6,6 +6,15 @@
 
 规划全貌见 `docs/ROADMAP-RIME-PARITY.md`；本批覆盖 P0 / P5-lite / P3 / P1 / P2 / P4，并补齐 Rime preset vocabulary 的部署语义。
 
+### 候选窗 preedit 不再内联回显（2026-11-01）
+- addon `updateUI` 由 `panel.setClientPreedit(...)` 改为 `panel.setPreedit(...)`：
+  拼音原码只显示在候选窗顶部（候选上方），不再写入客户端文本域；空 preedit
+  仍走 `panel.reset()`。
+- GTK `zenity --entry` 真机 + OCR 复核：输入 `nihao` 时输入框保持占位符
+  `type here`，`ni'hao` 与「你好 / 逆号 / 拟好」全部出现在候选窗内。
+- 安装的 `/usr/lib/x86_64-linux-gnu/fcitx5/libior.so`
+  md5 `8939ce133b11aae1476348c193444ce9`。
+
 ### 默认简体与不完整输入前缀回退（2026-11-01）
 - `dict-tools compile` 新增 `--simplify`：构建期用 vendored OpenCC ver.1.4.2
   t2s 表（`data/opencc/TSPhrases.txt` 最长短语优先 → `TSCharacters.txt`

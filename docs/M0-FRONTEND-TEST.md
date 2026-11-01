@@ -29,6 +29,11 @@
 - `docs/m0-candidates-qt.png`
 - `docs/m0-candidates-xim.png`
 
+> 说明：以上为 M0 验收时的历史截图，当时 preedit 使用 client preedit
+> （`panel.setClientPreedit`），拼音会内联绘制在客户端文本域。2026-11-01
+> 起已改为仅在候选窗顶部使用 `panel.setPreedit`，客户端文本域不再内联回显；
+> 现行行为见 `docs/M2-VERIFY.md` 的「候选窗 preedit」小节。
+
 ## 实测中发现并修复的问题
 
 1. **双重投递（关键缺陷）**：薄壳 `keyEvent` 只调用 `KeyEvent::filter()`
