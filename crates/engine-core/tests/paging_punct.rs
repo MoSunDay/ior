@@ -118,8 +118,10 @@ fn select_flat_commits_and_learns() {
 
 #[test]
 fn shift_commit_raw_sends_preedit_verbatim() {
-    let mut s = ma_session("ni'hao", default_config());
-    assert_eq!(s.config.shift_action, ShiftAction::CommitRaw);
+    let mut cfg = default_config();
+    assert_eq!(cfg.shift_action, ShiftAction::Clear); // leak-proof default
+    cfg.shift_action = ShiftAction::CommitRaw;
+    let mut s = ma_session("ni'hao", cfg);
     assert_eq!(
         process_shift(&mut s),
         ProcessResult::Committed("ni'hao".to_string())
@@ -136,7 +138,7 @@ fn shift_commit_raw_sends_preedit_verbatim() {
 fn shift_commit_best_learns_top_candidate() {
     let mut cfg = default_config();
     cfg.shift_action = ShiftAction::CommitBest;
-    let mut s = ma_session("ma", cfg);
+    let mut s = ma_session("ma", cfg.clone());
     assert_eq!(
         process_shift(&mut s),
         ProcessResult::Committed("十".to_string())
@@ -147,7 +149,7 @@ fn shift_commit_best_learns_top_candidate() {
         "learned: {learned:?}"
     );
     // Undecodable input falls back to the raw text.
-    let mut s = ma_session("mh", default_config());
+    let mut s = ma_session("mh", cfg);
     assert!(session::candidates(&s, 10).is_empty());
     assert_eq!(
         process_shift(&mut s),
@@ -158,6 +160,7 @@ fn shift_commit_best_learns_top_candidate() {
 #[test]
 fn shift_clear_drops_the_buffer() {
     let mut cfg = default_config();
+    assert_eq!(cfg.shift_action, ShiftAction::Clear); // the default
     cfg.shift_action = ShiftAction::Clear;
     let mut s = ma_session("ma", cfg);
     assert_eq!(process_shift(&mut s), ProcessResult::Editing);

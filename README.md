@@ -101,7 +101,7 @@ max_candidates = 50
 chinese_punct = false       # 中文标点映射（，。）；默认 false = 半角符号
 full_width = false          # 全角（１２３ / ａｂｃ / 全角空格）；默认半角，托盘图标与候选窗右侧可即时切换
 user_learning = true
-shift_action = "commit"    # commit | temp | none
+shift_action = "none"      # 切换时未上屏拼音：none=丢弃(默认，防误上屏) | commit=原样上屏 | temp=上屏首选
 enter_action = "raw"       # raw（回车上屏拼音原码）| candidate（同空格上屏首选）
 
 # 只写想改的项，其余取默认（模糊音默认全关）

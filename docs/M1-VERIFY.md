@@ -47,3 +47,15 @@ fcitx5-remote -s ior   # 聚焦窗口后切换
 
 P0/P5-lite/P3 批次（含 ABI v2 18 符号、四路 userdb 落盘）真机回归通过，
 未见崩溃（全程存活探针 alive=1）。
+
+
+## 删除自造词（candidate_delete，ABI v2 第 32 符号）回归：2026-11-02
+
+| 步骤 | 命令/操作 | 期望 | 结果 |
+|---|---|---|---|
+| ABI harness（C 消费者） | `g++` 链 `libior.so`：learn×2→save→新引擎 load→`candidate_delete(0)=0`→preedit 保留→save | 学习词重载置顶、删除后状态码 0/1/2、文件变小、第三引擎不复活 | ✅ HARNESS-OK |
+| 真机组码/选词/落盘 | zenity `nihao`+空格 → `fcitx5-remote`/`stat userdb.tsv` | 上屏「你好」，userdb mtime 即时更新 | ✅（输出=你好，mtime +Δ） |
+| 托盘菜单删除入口 | classicui 5.1.7 源码复核 | StatusArea 动作渲染于托盘（xcbtraywindow 右键菜单），候选窗 hover 无 IME 回调、仅左键转发 select | ✅ 设计约束确认（菜单项为 stock SimpleAction 管线，人工点选一步待复核） |
+
+结论：删除自造词引擎语义、C ABI 与真机选词持久化实证通过；托盘
+`Del word` 菜单点击→点词删除留一条人工复核。

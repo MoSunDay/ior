@@ -52,14 +52,18 @@ pub enum DoublePinyin {
 /// to English mode (see `session::process_shift`). Three configurable
 /// states: commit the raw buffer verbatim, commit the best candidate (raw
 /// text when nothing decodes), or just drop the composition.
+///
+/// The default is `Clear`: a lone Shift must only switch the mode, never
+/// leak half-typed pinyin into the application (the raw letters stay
+/// reachable via `enter_action` when needed).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ShiftAction {
     /// Commit the raw (typed) buffer as-is, apostrophes included.
-    #[default]
     CommitRaw,
     /// Commit the top candidate (learning applies); raw text as fallback.
     CommitBest,
     /// Drop the composition without committing anything.
+    #[default]
     Clear,
 }
 
@@ -130,7 +134,7 @@ impl Default for EngineConfig {
             max_candidates: 50,
             chinese_punct: false,
             full_width: false,
-            shift_action: ShiftAction::CommitRaw,
+            shift_action: ShiftAction::Clear,
             enter_action: EnterAction::CommitRaw,
         }
     }

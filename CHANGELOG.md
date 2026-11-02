@@ -4,6 +4,23 @@
 
 ## [Unreleased]
 
+### fix(engine)：Shift 切中英不再误上屏——默认丢弃未上屏拼音 + 点选残留 commit 不再被下一次切换带出
+
+- **症状**：中文模式下打了半截拼音（如 `chinses`），按 Shift 切换
+  输入方式时，半截拼音被原样上屏"带出来"；点选候选词后按 Shift 还会
+  把刚才点选的词再上屏一次。
+- **默认行为修正**：`engine.shift_action` 默认 `commit`（原样上屏）→
+  `none`（丢弃）。单独按 Shift 只切模式、绝不上屏半截拼音；要原码
+  上屏仍可用 Enter（`enter_action = "raw"`）或显式配置
+  `shift_action = "commit" | "temp"`。engine-core `ShiftAction` 默认
+  同步 `CommitRaw` → `Clear`（ior-config 与 engine-core 两处镜像默认）。
+- **FFI 残留 commit 修复**：`ior_engine_select`（候选窗点击）原来把
+  commit 写入一次性邮箱却由宿主经返回值上屏、从未 `take_commit`，
+  下一次 Shift 切换的 `take_commit` 会把旧词再上屏一遍。现 select
+  返回前即消费邮箱，返回值是该 commit 的唯一句柄（ABI 不变）。
+- 测试：默认丢弃断言（engine_state/ffi/paging_punct/model 四层）、
+  点选后切换无残留上屏回归用例；`commit`/`temp` 行为保留原覆盖。
+
 ### feat(userdb)：候选窗删除自造词（悬停高亮 + 🗑 进入删除模式 + 点击删除）；选词持久化四路复核
 
 - **选词持久化（既有能力，本轮复核为四路闭环）**：数字/空格/Enter/
@@ -18,8 +35,8 @@
 - **ABI v2 纯增补**：`ior_engine_candidate_delete(engine,
   page_local_index)`（ffi_userdict.rs，第 32 个 `ior_` 符号；0 已删 /
   1 非自造词 / 2 越界 / -1 null，容忍 null engine）。
-- **C++ 薄壳**：状态区新增 `ior-delword` 动作（候选窗右上角 Del
-  word / 托盘菜单）。点击进入一次性删除模式：候选窗 aux 行提示，
+- **C++ 薄壳**：状态区新增 `ior-delword` 动作（fcitx5 托盘图标菜单
+  Del word；classicui 的状态区动作渲染在托盘而非候选窗）。点击进入一次性删除模式：候选窗 aux 行提示，
   鼠标悬停高亮为 classicui 原生；点击要删的候选即删并立即
   `userdb_save` 落盘，Esc（仅退出模式、组合不丢）/ 任意按键 / 再点
   动作退出。
@@ -83,7 +100,7 @@
   （`ａｂｃ１２３！`）＋全角空格。组合中的数字选词、空格上屏优先级
   不变；半角为纯透传（零行为差异）。
 - C++ 薄壳：注册状态区动作 `ior-fullwidth`（**托盘图标右键菜单 +
-  候选窗右上角**，fcitx5 `SimpleAction` 勾选式），`activate()` 时重挂
+  托盘图标菜单**，fcitx5 `SimpleAction` 勾选式），`activate()` 时重挂
   状态区；idle gate 放行全角模式下的数字/空格/标点到引擎；切换后
   面板短暂显示 Full-width / Half-width（复用 1s 一次性清除 timer，
   提示函数泛化为 `showHint(ic, text)`）。

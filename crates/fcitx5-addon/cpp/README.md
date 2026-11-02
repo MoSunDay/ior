@@ -76,7 +76,8 @@ v2 相对 v1 的变化：
   按同一页内索引删掉候选背后的**自学习记录**（0 已删 / 1 非自造词、
   词库原词只读 / 2 越界 / -1 null），组合不丢，删除键与学习键严格
   镜像（span 候选删 span 键、整句候选删 normalized 键）。薄壳在
-  候选窗右上角注册状态区动作 `ior-delword`（Del word）：点击进入
+  托盘图标菜单注册状态区动作 `ior-delword`（Del word；classicui 的
+  状态区动作渲染在托盘，不在候选窗上）：点击进入
   一次性删除模式（aux 行提示），悬停高亮为 classicui 原生，再点击
   要删的候选即删并立即 `userdb_save` 落盘；Esc / 任意键 / 再点动作
   退出。classicui 5.1.7 只把候选左键点击转发给引擎（hover 无 IME

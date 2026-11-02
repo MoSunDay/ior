@@ -99,7 +99,8 @@ IorEngine::IorEngine(fcitx::Instance* instance, fcitx::EventLoop* eventLoop)
         return;
     }
     if (instance_ != nullptr) {
-        // Status-area toggle (tray icon menu / candidate window edge);
+        // Status-area toggle (tray icon menu; classicui renders status
+        // area actions in the tray, not on the candidate window);
         // activate() re-adds it to every input context's status area.
         widthAction_ = std::make_unique<fcitx::SimpleAction>();
         widthAction_->setShortText("Full-width");

@@ -74,9 +74,11 @@ mod tests {
                                           // SAFETY: live engine; page-local index 0 of the first page.
         let word = unsafe { crate::ffi::ior_engine_select(engine, 0) };
         assert_eq!(text(word), "你");
+        // The click hands its commit out via the return value; the mailbox
+        // is consumed, so take_commit reports nothing pending.
         assert_eq!(
             text(unsafe { crate::ffi::ior_engine_take_commit(engine) }),
-            "你"
+            ""
         );
 
         type_keys(engine, &[0x6E, 0x69]); // n i

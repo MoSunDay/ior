@@ -616,8 +616,10 @@ mod tests {
     #[test]
     fn ascii_mode_forwards_letters_and_clears_buffers() {
         let mut engine = ma_engine("ma");
-        assert_eq!(process_shift(&mut engine), 2); // CommitRaw("ma")
-        assert_eq!(engine.commit_buf.to_str(), Ok("ma"));
+        // Default shift_action = drop: the pending "ma" is discarded, not
+        // committed (a lone Shift must never leak half-typed pinyin).
+        assert_eq!(process_shift(&mut engine), 1); // Clear("ma")
+        assert_eq!(engine.commit_buf.to_str(), Ok(""));
         assert!(ascii_mode(&engine));
         assert_eq!(engine.preedit_buf.to_str(), Ok(""));
         assert!(engine.candidates_buf.is_empty());
@@ -630,14 +632,14 @@ mod tests {
     }
 
     #[test]
-    fn set_ascii_mode_is_idempotent_and_commits_pending_raw() {
+    fn set_ascii_mode_is_idempotent_and_drops_pending_raw() {
         let mut engine = ma_engine("ma");
         assert!(set_ascii_mode(&mut engine, true));
-        assert_eq!(engine.commit_buf.to_str(), Ok("ma")); // CommitRaw default
-                                                          // Re-setting the mode is a no-op: the one pending commit survives
-                                                          // (taken exactly once) and no phantom commit appears.
+        // Drop default: the pending "ma" is discarded, nothing committed.
+        assert_eq!(engine.commit_buf.to_str(), Ok(""));
+        assert!(!take_commit(&mut engine));
+        // Re-setting the current mode is a no-op: no phantom commit.
         assert!(set_ascii_mode(&mut engine, true));
-        assert!(take_commit(&mut engine));
         assert!(!take_commit(&mut engine));
         assert!(!set_ascii_mode(&mut engine, false));
         assert!(!ascii_mode(&engine));

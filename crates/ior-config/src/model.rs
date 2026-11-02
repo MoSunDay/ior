@@ -10,12 +10,14 @@ use crate::value::{Table, Value};
 pub enum ShiftAction {
     /// `"commit"`: commit the raw typed buffer verbatim
     /// (engine-core `ShiftAction::CommitRaw`).
-    #[default]
     Commit,
     /// `"temp"`: commit the best candidate, raw text as fallback
     /// (engine-core `ShiftAction::CommitBest`).
     Temp,
-    /// `"none"`: drop the composition (engine-core `ShiftAction::Clear`).
+    /// `"none"`: drop the composition — the default, so a lone Shift
+    /// never leaks half-typed pinyin into the application
+    /// (engine-core `ShiftAction::Clear`).
+    #[default]
     Drop,
 }
 
@@ -518,7 +520,7 @@ mod tests {
         assert_eq!(c.engine.max_candidates, 50);
         assert!(c.engine.user_learning);
         assert!(!c.engine.chinese_punct); // half-width symbols by default
-        assert_eq!(c.engine.shift_action, ShiftAction::Commit);
+        assert_eq!(c.engine.shift_action, ShiftAction::Drop); // leak-proof default
         assert_eq!(c.engine.double_pinyin, DoublePinyin::Off);
         assert_eq!(c.engine.prev_page_keys, ["Page_Up", "minus"]);
         assert_eq!(c.engine.next_page_keys, ["Page_Down", "equal"]);

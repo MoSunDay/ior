@@ -53,8 +53,9 @@
 //! - `ior_engine_select` commits the candidate at a **page-local** index of
 //!   the current page (candidate clicks: what is displayed is what is
 //!   committed, regardless of which page is shown) and returns the
-//!   committed text ("" for an invalid index); the pending commit is set
-//!   and the composition is reset. `ior_engine_candidate_delete` (in
+//!   committed text ("" for an invalid index); the return value is the
+//!   only handle on that commit (the mailbox is consumed) and the
+//!   composition is reset. `ior_engine_candidate_delete` (in
 //!   [`crate::ffi_userdict`]) removes the learned entry behind the same
 //!   page-local index instead of committing, keeping the composition.
 //! - `ior_engine_ascii_mode` / `ior_engine_set_ascii_mode` report/force the
@@ -403,6 +404,10 @@ pub unsafe extern "C" fn ior_engine_select(
         return empty_ptr();
     };
     if engine_state::select_page_local(engine, page_local_index) {
+        // The host commits via this return value, so the one-shot commit
+        // mailbox is consumed here: a later take_commit (e.g. the next
+        // Shift mode toggle) must not re-emit the clicked candidate.
+        engine_state::take_commit(engine);
         engine.commit_buf.as_ptr()
     } else {
         empty_ptr()
@@ -635,15 +640,15 @@ mod tests {
     }
 
     #[test]
-    fn shift_keysym_toggles_mode_and_commits_raw() {
+    fn shift_keysym_toggles_mode_and_drops_preedit() {
         // SAFETY: engine stays live until ior_engine_free below.
         let engine = test_engine();
         type_keys(engine, &NIHAO);
         assert_eq!(unsafe { ior_engine_ascii_mode(engine) }, 0);
-        // Shift press triggers the toggle; the pending preedit is committed
-        // raw (default shift_action) in the same stroke.
-        assert_eq!(unsafe { ior_engine_process_key(engine, XK_SHIFT_L) }, 2);
-        assert_eq!(text(unsafe { ior_engine_take_commit(engine) }), "nihao");
+        // Shift press triggers the toggle; the default shift_action drops
+        // the pending preedit — the toggle must not leak half-typed pinyin.
+        assert_eq!(unsafe { ior_engine_process_key(engine, XK_SHIFT_L) }, 1);
+        assert_eq!(text(unsafe { ior_engine_take_commit(engine) }), "");
         assert_eq!(unsafe { ior_engine_ascii_mode(engine) }, 1);
         assert_eq!(text(unsafe { ior_engine_preedit(engine) }), "");
         // English mode: letters and punctuation are forwarded.
@@ -652,6 +657,21 @@ mod tests {
         // Shift again: back to Chinese, plain editing.
         assert_eq!(unsafe { ior_engine_process_key(engine, XK_SHIFT_R) }, 1);
         assert_eq!(unsafe { ior_engine_ascii_mode(engine) }, 0);
+        unsafe { ior_engine_free(engine) };
+    }
+
+    #[test]
+    fn select_leaves_no_stale_commit_for_the_next_toggle() {
+        // SAFETY: engine stays live until ior_engine_free below.
+        let engine = test_engine();
+        type_keys(engine, &NIHAO);
+        // The host commits the click via the returned pointer alone.
+        let picked = text(unsafe { ior_engine_select(engine, 0) });
+        assert!(!picked.is_empty());
+        // A later Shift toggle must not re-emit the clicked candidate.
+        assert_eq!(unsafe { ior_engine_process_key(engine, XK_SHIFT_L) }, 1);
+        assert_eq!(text(unsafe { ior_engine_take_commit(engine) }), "");
+        assert_eq!(unsafe { ior_engine_ascii_mode(engine) }, 1);
         unsafe { ior_engine_free(engine) };
     }
 
@@ -705,7 +725,8 @@ mod tests {
         let engine = test_engine();
         type_keys(engine, &[0x6E, 0x69]); // n i
         assert_eq!(unsafe { ior_engine_set_ascii_mode(engine, 1) }, 1);
-        assert_eq!(text(unsafe { ior_engine_take_commit(engine) }), "ni");
+        // Drop default: the pending "ni" is discarded, not committed.
+        assert_eq!(text(unsafe { ior_engine_take_commit(engine) }), "");
         // Re-setting the current mode is a no-op (no phantom commit).
         assert_eq!(unsafe { ior_engine_set_ascii_mode(engine, 1) }, 1);
         assert_eq!(text(unsafe { ior_engine_take_commit(engine) }), "");

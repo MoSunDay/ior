@@ -191,10 +191,10 @@ private:
     // cancels a pending one).
     std::unique_ptr<fcitx::EventSourceTime> modeHintEvent_;
     // Full-width toggle shown in the status area (tray icon menu and the
-    // candidate window's right edge); null when instance_ is null.
+    // tray icon menu); null when instance_ is null.
     std::unique_ptr<fcitx::SimpleAction> widthAction_;
     // One-shot "delete learned word" mode, entered from the status-area
-    // action (candidate window's right edge): the next candidate click
+    // action (tray icon menu): the next candidate click
     // deletes the learned entry instead of committing. Exits on that
     // click, on any key press (Esc is consumed, others fall through) or
     // on reset. Hover highlighting is the UI's own; only clicks reach
