@@ -45,11 +45,12 @@ fn multi_syllable_prefix_spans_come_longest_first() {
     assert_eq!(cands[span1].pinyin, "shi");
 }
 
-/// Committing a prefix-span candidate commits its hanzi and leaves the
-/// uncovered letters typed (rime: pick the word, keep typing the rest);
-/// learning records the word under its span key.
+/// Picking a prefix-span candidate STAGES its hanzi (nothing commits
+/// yet) and leaves the uncovered letters typed; the next full-coverage
+/// pick commits the composed string and learns it under the composed
+/// key, on top of the per-span learning.
 #[test]
-fn partial_span_commit_keeps_remainder_typed() {
+fn partial_span_pick_stages_until_full_commit() {
     let mut s = new_session_with(default_config(), Dictionary::builtin());
     for ch in "nihao".chars() {
         assert_eq!(process_key(&mut s, ch), ProcessResult::Editing);
@@ -59,21 +60,26 @@ fn partial_span_commit_keeps_remainder_typed() {
         .iter()
         .position(|c| c.text == "你")
         .expect("span candidate 你");
-    assert_eq!(
-        select_flat(&mut s, idx),
-        ProcessResult::Committed("你".to_string())
-    );
+    // staged, not committed: preedit carries the picked hanzi
+    assert_eq!(select_flat(&mut s, idx), ProcessResult::Editing);
     assert_eq!(s.raw, "hao");
-    // the remainder keeps decoding on its own
+    assert_eq!(s.staged, vec![("ni".to_string(), "你".to_string())]);
+    assert_eq!(session::preedit(&s), "你hao");
+    // the remainder keeps decoding on its own; the final pick commits
+    // the composed string and learns it under the composed key
     assert_eq!(
         process_key(&mut s, ' '),
-        ProcessResult::Committed("好".to_string())
+        ProcessResult::Committed("你好".to_string())
     );
-    assert!(s.raw.is_empty());
-    // learned under the span key, so it resurfaces early next round
+    assert!(s.raw.is_empty() && s.staged.is_empty());
+    // span key learned (resurfaces early next round)...
     assert!(user_dict::lookup(&s.user_dict, "ni")
         .iter()
         .any(|(h, _)| h == "你"));
+    // ...and so is the composed whole-word key
+    assert!(user_dict::lookup(&s.user_dict, "ni'hao")
+        .iter()
+        .any(|(h, _)| h == "你好"));
 }
 
 /// A typed `'` separator at the commit boundary is consumed with the
@@ -88,11 +94,9 @@ fn partial_commit_swallows_the_boundary_separator() {
         .iter()
         .position(|c| c.text == "你")
         .expect("span candidate 你");
-    assert_eq!(
-        select_flat(&mut s, idx),
-        ProcessResult::Committed("你".to_string())
-    );
+    assert_eq!(select_flat(&mut s, idx), ProcessResult::Editing);
     assert_eq!(s.raw, "hao");
+    assert_eq!(s.staged, vec![("ni".to_string(), "你".to_string())]);
 }
 
 /// Learned span words surface at the head of their span group (user-first
@@ -110,12 +114,10 @@ fn learned_span_words_lead_their_span_group() {
             .iter()
             .position(|c| c.text == "事")
             .expect("span candidate 事");
-        assert_eq!(
-            select_flat(&mut s, idx),
-            ProcessResult::Committed("事".to_string())
-        );
-        // clear the leftover "jian"
+        assert_eq!(select_flat(&mut s, idx), ProcessResult::Editing);
+        // clear the staged pick and the leftover "jian"
         reset_via_escape(&mut s);
+        assert!(s.staged.is_empty());
     }
     // now the learned 事 precede the dictionary hit 是 within the span
     for ch in "shijian".chars() {
@@ -173,9 +175,15 @@ fn double_pinyin_partial_commit_trims_code_pairs() {
         cands.iter().filter(|c| c.pinyin == "jin").collect();
     let pick = jin.first().expect("span candidate for jin");
     let idx = cands.iter().position(|c| c.pinyin == pick.pinyin).unwrap();
-    assert_eq!(
-        select_flat(&mut s, idx),
-        ProcessResult::Committed(pick.text.clone())
-    );
+    // staged, not committed; one code pair per covered syllable remains
+    assert_eq!(select_flat(&mut s, idx), ProcessResult::Editing);
     assert_eq!(s.raw, "tj", "one code pair per covered syllable");
+    assert_eq!(s.staged, vec![(pick.pinyin.clone(), pick.text.clone())]);
+    // finishing with 天 commits the composed two-char word
+    let tian = session::candidates(&s, 50)
+        .iter()
+        .position(|c| c.text == "天")
+        .expect("full candidate 天");
+    let word = format!("{}天", pick.text);
+    assert_eq!(select_flat(&mut s, tian), ProcessResult::Committed(word));
 }

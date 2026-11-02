@@ -70,11 +70,10 @@ fn delete_flat_of_span_candidate_uses_the_span_key() {
         type_str(&mut s, "nihao");
         let cands = session::candidates(&s, 50);
         let idx = cands.iter().position(|c| c.text == "你").expect("span 你");
-        assert_eq!(
-            select_flat(&mut s, idx),
-            ProcessResult::Committed("你".into())
-        );
-        // The uncovered `hao` remains typed; clear it before re-typing.
+        // Staged (not committed) under the span key; the uncovered `hao`
+        // remains typed. Escape clears both before re-typing.
+        assert_eq!(select_flat(&mut s, idx), ProcessResult::Editing);
+        assert_eq!(s.staged, vec![("ni".to_string(), "你".to_string())]);
         assert_eq!(process_key(&mut s, '\u{1b}'), ProcessResult::Editing);
     }
     assert_eq!(

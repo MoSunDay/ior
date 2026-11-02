@@ -4,6 +4,27 @@
 
 ## [Unreleased]
 
+### feat(engine)：组句暂存——span 选字不再逐字上屏，选完整段才整词输出并学习（造词闭环）
+
+- **行为变化**：翻页选中只覆盖部分拼音的候选（如 `panjie` 选「盼」），
+  汉字进入暂存缓冲而非立即上屏（preedit 显示 `盼jie`）；剩余段选完
+  （选「姐」）后一次性输出整词「盼姐」。中文/英文标点、Enter 原码、
+  Shift 切换的带出行为同步适配（标点带出暂存前缀、Enter 输出
+  `盼jie`、Clear 全部丢弃）。
+- **造词闭环**：整段选完时按**组合键**学习（暂存 `pan` + 末段 `jie`
+  → `pan'jie → 盼姐`），单字仍按各自段键学习（`pan→盼`、`jie→姐`
+  保持单字频次排序）。下次输入 `panjie`，「盼姐」直达候选首两页；
+  `candidate_delete` 删词键与之严格镜像（整词删 `pan'jie`、
+  span 删 span 键）。
+- **退格**：剩余拼音删空后，下一次退格撤销最近的暂存选字（段键回到
+  raw 缓冲可重选；双拼模式下回退为全拼字母）。
+- **ABI 不变**：`ior_engine_select` 对暂存中的 span 点击返回 `""`
+  （宿主空串守卫已有）；`process_key` span 数字键返回 1（编辑中）。
+- 测试：新增 `sentence_staging.rs` 6 例（组合提交/组合学习、退格撤销、
+  Enter/Shift/标点适配、删词镜像）；既有 span 测试改写为暂存语义。
+  377 tests / clippy / fmt 全绿。
+
+
 ### fix(engine)：Shift 切中英不再误上屏——默认丢弃未上屏拼音 + 点选残留 commit 不再被下一次切换带出
 
 - **症状**：中文模式下打了半截拼音（如 `chinses`），按 Shift 切换
@@ -18,6 +39,14 @@
   commit 写入一次性邮箱却由宿主经返回值上屏、从未 `take_commit`，
   下一次 Shift 切换的 `take_commit` 会把旧词再上屏一遍。现 select
   返回前即消费邮箱，返回值是该 commit 的唯一句柄（ABI 不变）。
+- **候选窗"Chinese/English"提示残留修复（真机二次复现根因）**：
+  薄壳 `showHint`（中英切换的 "Chinese"/"English" 面板提示）写入的
+  aux 行在开始打字后不被清除——`updateUI` 组态分支从不清理 aux、
+  1 秒定时器在组态中又跳过重置，导致整个输入过程候选窗顶部挂着
+  "Chinese" 字样，看起来像输入内容被加了前缀。现 `updateUI` 每次刷新
+  先清 aux（删除自造词模式除外），定时器到期也仅撤提示行、保留组态
+  内容；提示保留"下一键或 1 秒先到者"即消失的经典行为。真机验证：
+  切换后 0.1s 截图提示在，1s 内打字后截图仅剩 preedit+候选、无提示。
 - 测试：默认丢弃断言（engine_state/ffi/paging_punct/model 四层）、
   点选后切换无残留上屏回归用例；`commit`/`temp` 行为保留原覆盖。
 

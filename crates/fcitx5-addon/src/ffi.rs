@@ -53,8 +53,10 @@
 //! - `ior_engine_select` commits the candidate at a **page-local** index of
 //!   the current page (candidate clicks: what is displayed is what is
 //!   committed, regardless of which page is shown) and returns the
-//!   committed text ("" for an invalid index); the return value is the
-//!   only handle on that commit (the mailbox is consumed) and the
+//!   committed text ("" for an invalid index, and "" while sentence
+//!   staging holds the pick: a prefix-span candidate is buffered, nothing
+//!   commits until a later pick covers the whole input); the return value
+//!   is the only handle on that commit (the mailbox is consumed) and the
 //!   composition is reset. `ior_engine_candidate_delete` (in
 //!   [`crate::ffi_userdict`]) removes the learned entry behind the same
 //!   page-local index instead of committing, keeping the composition.

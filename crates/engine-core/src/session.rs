@@ -31,6 +31,11 @@ const FLAT_CANDIDATE_LIMIT: usize = 50;
 pub struct Session {
     /// The raw preedit buffer (lowercase letters plus `'` separators).
     pub raw: String,
+    /// Prefix spans already picked but not yet flushed (sentence staging):
+    /// (span key, hanzi) pairs, oldest first. A partial pick lands here
+    /// instead of committing; the joined text flushes — and learns under
+    /// the composed key — when a later pick covers the whole input.
+    pub staged: Vec<(String, String)>,
     /// Engine configuration snapshot for this session.
     pub config: EngineConfig,
     /// Static dictionary (canonical keys; fuzzy matching is query-side).
@@ -84,6 +89,7 @@ pub fn new_session_with(config: EngineConfig, dict: Dictionary) -> Session {
     let full_width = config.full_width;
     Session {
         raw: String::new(),
+        staged: Vec::new(),
         config,
         dict,
         lm: None,
@@ -139,12 +145,19 @@ pub fn process_key(s: &mut Session, ch: char) -> ProcessResult {
         ' ' => handle_commit_or_passthrough(s),
         '\n' | '\r' => handle_enter(s),
         '\u{8}' | '\u{7f}' => {
-            if s.raw.is_empty() {
-                ProcessResult::Forwarded
-            } else {
+            if !s.raw.is_empty() {
                 s.raw.pop();
                 s.page = 0;
                 ProcessResult::Editing
+            } else if let Some((key, _)) = s.staged.pop() {
+                // Undo the newest staged pick: its span key returns to the
+                // raw buffer for re-selection (full-pinyin letters even in
+                // double-pinyin mode; re-typing restores the codes).
+                s.raw = key;
+                s.page = 0;
+                ProcessResult::Editing
+            } else {
+                ProcessResult::Forwarded
             }
         }
         '\u{1b}' => {
@@ -177,14 +190,15 @@ fn handle_digit(s: &mut Session, ch: char) -> ProcessResult {
 /// Space: commit the top candidate, or pass the raw letters through
 /// when nothing can be decoded (typed `'` separators are dropped).
 fn handle_commit_or_passthrough(s: &mut Session) -> ProcessResult {
-    if s.raw.is_empty() {
+    if s.raw.is_empty() && s.staged.is_empty() {
         return ProcessResult::Forwarded;
     }
     let cands = candidates(s, FLAT_CANDIDATE_LIMIT);
     match cands.first() {
         Some(cand) => commit_candidate(s, cand),
         None => {
-            let text = s.raw.replace('\'', "");
+            let mut text = staged_text(s);
+            text.push_str(&s.raw.replace('\'', ""));
             reset_composition(s);
             ProcessResult::Committed(text)
         }
@@ -197,12 +211,13 @@ fn handle_commit_or_passthrough(s: &mut Session) -> ProcessResult {
 /// empty composition forwards Enter so applications still receive
 /// the newline.
 fn handle_enter(s: &mut Session) -> ProcessResult {
-    if s.raw.is_empty() {
+    if s.raw.is_empty() && s.staged.is_empty() {
         return ProcessResult::Forwarded;
     }
     match s.config.enter_action {
         EnterAction::CommitRaw => {
-            let text = s.raw.clone();
+            let mut text = staged_text(s);
+            text.push_str(&s.raw);
             reset_composition(s);
             ProcessResult::Committed(text)
         }
@@ -210,30 +225,57 @@ fn handle_enter(s: &mut Session) -> ProcessResult {
     }
 }
 
-/// Commits `cand`. Full-input candidates learn under the normalized key of
-/// the *decode input* (the raw buffer, or its double-pinyin transform when
-/// that mode is on) and clear the composition. A rime-style prefix-span
-/// candidate (one whose `pinyin` covers only a leading part of the input,
-/// e.g. 你 from `ni` while `hao` remains) learns under its span key and
-/// leaves the uncovered letters typed, exactly like rime's translator:
-/// pick the word, keep typing the rest.
+/// Staged hanzi joined so far ("" with nothing staged).
+fn staged_text(s: &Session) -> String {
+    s.staged.iter().map(|(_, t)| t.as_str()).collect()
+}
+
+/// Commit text of a full-coverage pick: staged hanzi + the pick itself.
+fn composed_text(s: &Session, tail: &str) -> String {
+    let mut text = staged_text(s);
+    text.push_str(tail);
+    text
+}
+
+/// Full-input learning key: staged span keys + the final key, e.g. staged
+/// `pan` + final `jie` -> `pan'jie`. Deletion mirrors this key exactly.
+fn composed_key(s: &Session, tail: &str) -> String {
+    if s.staged.is_empty() {
+        return tail.to_string();
+    }
+    let mut parts: Vec<&str> = s.staged.iter().map(|(k, _)| k.as_str()).collect();
+    parts.push(tail);
+    parts.join("'")
+}
+
+/// Commits `cand`. A prefix-span candidate (one whose `pinyin` covers only
+/// a leading part of the input, e.g. 你 from `ni` while `hao` remains)
+/// learns under its span key and *stages*: the hanzi joins [`Session::
+/// staged`], the uncovered letters stay typed and nothing is committed
+/// yet. A full-input candidate commits the staged hanzi plus itself as one
+/// string and learns under the composed key (`pan` staged + `jie` final
+/// -> `pan'jie`), so span-by-span picking builds a learnable word.
 fn commit_candidate(s: &mut Session, cand: &Candidate) -> ProcessResult {
     if let Some(rest) = uncovered_remainder(s, cand) {
         if s.config.user_learning {
             user_dict::learn(&mut s.user_dict, &cand.pinyin, &cand.text);
         }
+        s.staged.push((cand.pinyin.clone(), cand.text.clone()));
         s.raw = rest;
         s.page = 0;
-        return ProcessResult::Committed(cand.text.clone());
+        return ProcessResult::Editing;
     }
     let key = normalized_key(&decode_input(s));
     if s.config.user_learning {
         if let Some(k) = key {
-            user_dict::learn(&mut s.user_dict, &k, &cand.text);
+            let full = composed_key(s, &k);
+            let text = composed_text(s, &cand.text);
+            user_dict::learn(&mut s.user_dict, &full, &text);
         }
     }
+    let text = composed_text(s, &cand.text);
     reset_composition(s);
-    ProcessResult::Committed(cand.text.clone())
+    ProcessResult::Committed(text)
 }
 
 /// The still-uncovered tail of the raw buffer when `cand` is a prefix-span
@@ -269,10 +311,12 @@ fn uncovered_remainder(s: &Session, cand: &Candidate) -> Option<String> {
     Some(s.raw[raw_pos..].to_string())
 }
 
-/// Drops the composition: raw buffer and page index. Shared by every path
-/// that clears what is being typed (commit, escape, mode switch).
+/// Drops the composition: raw buffer, staged spans and page index. Shared
+/// by every path that clears what is being typed (commit, escape, mode
+/// switch).
 fn reset_composition(s: &mut Session) {
     s.raw.clear();
+    s.staged.clear();
     s.page = 0;
 }
 
@@ -367,7 +411,9 @@ pub fn delete_flat(s: &mut Session, flat_index: usize) -> DeleteOutcome {
         // Span candidates learn (and thus delete) under their span key.
         Some(_) => cand.pinyin.clone(),
         None => match normalized_key(&decode_input(s)) {
-            Some(k) => k,
+            // Full picks learn under the composed key (staged spans
+            // included); deletion mirrors that exactly.
+            Some(k) => composed_key(s, &k),
             None => return DeleteOutcome::NotUserWord,
         },
     };
@@ -384,10 +430,11 @@ pub fn delete_flat(s: &mut Session, flat_index: usize) -> DeleteOutcome {
 /// just reports `Editing`. Either way the composition is cleared.
 pub fn process_shift(s: &mut Session) -> ProcessResult {
     s.ascii_mode = !s.ascii_mode;
-    let result = if s.ascii_mode && !s.raw.is_empty() {
+    let result = if s.ascii_mode && !(s.raw.is_empty() && s.staged.is_empty()) {
         match s.config.shift_action {
             ShiftAction::CommitRaw => {
-                let text = s.raw.clone();
+                let mut text = staged_text(s);
+                text.push_str(&s.raw);
                 reset_composition(s);
                 ProcessResult::Committed(text)
             }
@@ -396,7 +443,8 @@ pub fn process_shift(s: &mut Session) -> ProcessResult {
                 match cands.first() {
                     Some(cand) => commit_candidate(s, cand),
                     None => {
-                        let text = s.raw.clone();
+                        let mut text = staged_text(s);
+                        text.push_str(&s.raw);
                         reset_composition(s);
                         ProcessResult::Committed(text)
                     }
@@ -429,20 +477,27 @@ fn handle_punct(s: &mut Session, ch: char) -> ProcessResult {
     let chinese = !s.ascii_mode && s.config.chinese_punct && !s.ascii_punct;
     match punct::map(&mut s.punct, ch, chinese) {
         punct::PunctOut::Text(t) => {
-            if s.raw.is_empty() {
+            if s.raw.is_empty() && s.staged.is_empty() {
                 return ProcessResult::Committed(t);
             }
             let cands = candidates(s, FLAT_CANDIDATE_LIMIT);
             match cands.first() {
                 Some(cand) => {
-                    let mut text = cand.text.clone();
-                    commit_candidate(s, cand);
+                    // Flush what the pick settles: a full-coverage pick
+                    // commits the composed text; a staged span leaves its
+                    // hanzi buffered, which the punctuation carries out.
+                    let mut text = match commit_candidate(s, cand) {
+                        ProcessResult::Committed(text) => text,
+                        _ => staged_text(s),
+                    };
                     text.push_str(&t);
                     ProcessResult::Committed(text)
                 }
                 None => {
+                    let mut text = staged_text(s);
+                    text.push_str(&t);
                     reset_composition(s);
-                    ProcessResult::Committed(t)
+                    ProcessResult::Committed(text)
                 }
             }
         }
@@ -481,14 +536,15 @@ fn decode_input(s: &Session) -> String {
 /// segmentation (as-typed letters), e.g. `nihao` -> `ni'hao`. Runs that
 /// cannot be segmented yet leave the raw string unchanged.
 pub fn preedit(s: &Session) -> String {
+    let prefix = staged_text(s);
     let mut parts: Vec<String> = Vec::new();
     for run in s.raw.split('\'') {
         match best_segmentation(run) {
             Some(segs) => parts.push(segs.join("'")),
-            None => return s.raw.clone(),
+            None => return format!("{prefix}{}", s.raw),
         }
     }
-    parts.join("'")
+    format!("{prefix}{}", parts.join("'"))
 }
 
 /// Clears the preedit buffer and page (keeps dictionaries, learning data
