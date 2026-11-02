@@ -179,3 +179,30 @@ fn composed_word_deletes_under_the_composed_key() {
     assert_eq!(delete_flat(&mut s, learned), DeleteOutcome::Deleted);
     assert!(user_dict::lookup(&s.user_dict, "pan'jie").is_empty());
 }
+
+/// Shift with `shift_action = "temp"` (CommitBest) must carry the staged
+/// hanzi out when the remainder's best candidate is itself a span — the
+/// trailing composition reset would otherwise drop everything silently
+/// (regression: the staging change once lost the whole input here).
+#[test]
+fn shift_commit_best_flushes_staged_when_best_is_a_span() {
+    use engine_core::config::{EngineConfig, ShiftAction};
+    let cfg = EngineConfig {
+        shift_action: ShiftAction::CommitBest,
+        ..default_config()
+    };
+    let mut s = new_session_with(cfg, Dictionary::from_tsv(TSV).expect("inline tsv"));
+    typed(&mut s, "panjiewo");
+    stage_pick(&mut s, "盼");
+    // remainder `jiewo` has no full-coverage candidate: its best pick is
+    // the `jie` span 姐, which stages instead of committing
+    assert_eq!(
+        session::process_shift(&mut s),
+        ProcessResult::Committed("盼姐".into())
+    );
+    assert!(s.raw.is_empty() && s.staged.is_empty());
+    // the flushed span still learned under its own span key
+    assert!(user_dict::lookup(&s.user_dict, "jie")
+        .iter()
+        .any(|(h, _)| h == "姐"));
+}

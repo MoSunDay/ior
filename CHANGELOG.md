@@ -23,6 +23,14 @@
 - 测试：新增 `sentence_staging.rs` 6 例（组合提交/组合学习、退格撤销、
   Enter/Shift/标点适配、删词镜像）；既有 span 测试改写为暂存语义。
   377 tests / clippy / fmt 全绿。
+### fix(engine)：Shift+`shift_action="temp"` 不再静默丢弃暂存选字（复核发现）
+
+- 组句暂存改动引入的回归：切英文时若剩余输入的首候选是 span，旧逻辑
+  只暂存不提交，模式切换尾部的清空把暂存汉字与剩余拼音一并丢弃——
+  整段输入无声消失。现该分支携带已暂存汉字上屏（span 键学习保留）。
+- 测试：`sentence_staging` 新增 CommitBest+span 回归用例；378 tests /
+  clippy / fmt 全绿。
+
 
 
 ### fix(engine)：Shift 切中英不再误上屏——默认丢弃未上屏拼音 + 点选残留 commit 不再被下一次切换带出

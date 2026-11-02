@@ -441,7 +441,15 @@ pub fn process_shift(s: &mut Session) -> ProcessResult {
             ShiftAction::CommitBest => {
                 let cands = candidates(s, FLAT_CANDIDATE_LIMIT);
                 match cands.first() {
-                    Some(cand) => commit_candidate(s, cand),
+                    Some(cand) => match commit_candidate(s, cand) {
+                        // A full-coverage pick already committed the
+                        // composed text (composed-key learning included).
+                        committed @ ProcessResult::Committed(_) => committed,
+                        // The best pick only staged a span: the mode
+                        // switch still carries the settled hanzi out —
+                        // the trailing reset would otherwise drop them.
+                        _ => ProcessResult::Committed(staged_text(s)),
+                    },
                     None => {
                         let mut text = staged_text(s);
                         text.push_str(&s.raw);
