@@ -1,4 +1,4 @@
-最后验证：2026-11-02 ·（基线：ec3feed @ main + 工作区未提交变更；组件状态按工作区现状记录）
+最后验证：2026-11-02 ·（基线：d32ce87 @ main，378 tests；组件状态按已提交状态记录）
 
 # ior 仓库记忆
 
@@ -22,7 +22,7 @@
 - 验证文档：`docs/{M0-FRONTEND-TEST,M1-VERIFY,M2-VERIFY,VOICE-VERIFY,NODE02-DEPLOY}.md`。
 
 ## 架构与关键不变量（含证据）
-- **FFI ABI**：`ior_engine_abi_version()` 版本门禁；共 32 个 `ior_` extern "C" 符号（ffi.rs / ffi_userdict.rs / ffi_voice.rs / ffi_width.rs），改动须 Rust 与 `cpp/ioraddon.cpp` 双端同步；惯例为**纯增补**（不删不改签名）。
+- **FFI ABI**：`ior_engine_abi_version()` 版本门禁；共 32 个 `ior_` extern "C" 符号（ffi.rs / ffi_userdict.rs / ffi_voice.rs / ffi_width.rs），改动须 Rust 与 `cpp/ioraddon.cpp` 双端同步；惯例为**纯增补**（不删不改签名）。`ior_engine_select` 语义：选中 span 候选时返回**空串**且状态 Editing（组句暂存，commit 推迟到整段组合上屏）——C++ 端须守卫空串勿清 preedit。
 - **依赖纪律**：除 fcitx5-addon 与 bench 外全部零第三方依赖（各 Cargo.toml `[dependencies]` 为空，已逐个核对）；fcitx5-addon 仅 path 依赖 engine-core + ior-config。
 - **`unsafe` 边界**：只允许在 fcitx5-addon FFI 层；engine-core / dict-tools / ior-config / voice 源码无 unsafe（grep 已核）。
 - **纯函数式**：无 class / trait 对象 / 继承（README「仓库规范」）；状态经参数与返回值传递。
@@ -38,7 +38,7 @@
 - 语音部署：`scripts/deploy-asr-node02.sh`（node02：ASR 8000 / LLM 8001，docs/NODE02-DEPLOY.md）。
 
 ## 记忆索引
-- `features/`：尚无特性记忆（本次为初始化；后续特性工作按需新增）。
-- `features/changelog/`：尚无记忆级变更记录。
+- `features/`：暂无按特性拆分的常驻记忆（变更记录在 changangelog/ 足够）。
+- `features/changelog/YYYY-MM-DD/<topic>.md`：提交批次记录（删词+预编译词库、组句暂存两批）。
 - `agents/`：未创建（暂无按域拆分需求）。
 - 历史事实首要来源是项目自身 `CHANGELOG.md`（Keep a Changelog，条目极详尽）——查历史先读它，再决定是否值得落记忆。
