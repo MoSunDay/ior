@@ -21,7 +21,8 @@
 //! - Every entry point tolerates a null engine (process_key returns -1,
 //!   preedit/take_commit/select return "", candidate_count/page_info/
 //!   ascii_mode return 0, page_next/page_prev/page_key_direction return
-//!   0, candidate returns null, userdb_save/load/decay return -1).
+//!   0, candidate returns null, userdb_save/load/decay and
+//!   candidate_delete return -1).
 //! - Candidate symbols expose the **current page** only; paging is cyclic
 //!   (`page_next`/`page_prev`, snapshot via `page_info`), clicks commit via
 //!   `select(page_local_index)`, and the Chinese/English mode pair is
@@ -32,6 +33,12 @@
 //!   dictionary (preedit/commit/mode untouched; a missing file is status 1,
 //!   not an error). File I/O lives in [`engine_state`] only — engine-core
 //!   just produces and consumes bytes.
+//!
+//! - The deletion symbol `candidate_delete` (see [`ffi_userdict`],
+//!   additive ABI v2) is the delete-on-click counterpart of `select`:
+//!   it removes the learned entry behind a page-local candidate (the
+//!   composition survives) and reports deleted / not-a-learned-word /
+//!   out-of-range; the host persists via `userdb_save` right after.
 //!
 //! - The `voice_*` family (see [`ffi_voice`], additive ABI v2) drives
 //!   speech input: a configurable hotkey (`ctrl+\`` by default, from
@@ -48,7 +55,9 @@
 
 pub mod engine_state;
 pub mod ffi;
+pub mod ffi_userdict;
 pub mod ffi_voice;
+pub mod ffi_width;
 mod keysym;
 pub mod voice_settings;
 mod voice_state;

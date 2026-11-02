@@ -46,6 +46,7 @@ pub mod spelling;
 pub mod syllable;
 pub mod user_dict;
 pub mod user_dict_store;
+pub mod width;
 
 pub use beam::{candidates as beam_candidates, BeamParams, MIN_BEAM_SYLLABLES};
 pub use config::{
@@ -61,17 +62,18 @@ pub use lm::{from_gram_bytes, GramModel, BACKOFF_PENALTY, GRAM_MAGIC, GRAM_ORDER
 pub use punct::{map as punct_map, new as new_punct, reset as punct_reset, PunctOut, PunctState};
 pub use segmenter::{best_segmentation, segmentations};
 pub use session::{
-    candidates as session_candidates, current_page, new_session, new_session_with, next_page,
-    normalized_key, page_count, preedit, prev_page, process_key, process_shift,
-    reset as reset_session, select_flat, set_double_pinyin, toggle_ascii_punct, ProcessResult,
-    Session,
+    candidates as session_candidates, current_page, delete_flat, new_session, new_session_with,
+    next_page, normalized_key, page_count, preedit, prev_page, process_key, process_shift,
+    reset as reset_session, select_flat, set_double_pinyin, toggle_ascii_punct, DeleteOutcome,
+    ProcessResult, Session,
 };
 pub use spelling::{initials_prefix, key_variants, syllable_variants};
 pub use syllable::{is_syllable, SYLLABLES};
 pub use user_dict::{
-    absorb as absorb_user, decay as decay_user, is_empty as user_dict_is_empty,
-    learn as learn_user, len as user_dict_len, lookup as lookup_user, new as new_user_dict,
-    UserDict, SNAPSHOT_HEADER as USERDB_SNAPSHOT_HEADER,
+    absorb as absorb_user, decay as decay_user, forget as forget_user,
+    is_empty as user_dict_is_empty, learn as learn_user, len as user_dict_len,
+    lookup as lookup_user, new as new_user_dict, UserDict,
+    SNAPSHOT_HEADER as USERDB_SNAPSHOT_HEADER,
 };
 pub use user_dict_store::{
     compact as compact_userdb, export_tsv as export_user_tsv,

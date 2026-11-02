@@ -146,7 +146,7 @@ mod tests {
         let merged = merge_tables(&default_table(), &user).expect("merge");
         let engine = merged.get_table("engine").unwrap();
         assert_eq!(engine.get("page_size"), Some(&Value::Int(7)));
-        assert_eq!(engine.get("max_candidates"), Some(&Value::Int(10))); // untouched
+        assert_eq!(engine.get("max_candidates"), Some(&Value::Int(50))); // untouched
         assert_eq!(
             engine.get_table("fuzzy").unwrap().get("z_zh"),
             Some(&Value::Bool(true))

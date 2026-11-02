@@ -1,4 +1,4 @@
-//! ior configuration (P4 step 1, see `docs/ROADMAP-RIME-PARITY.md`): a
+//! ior configuration (P4 step 1): a
 //! TOML-subset parser, the ior config schema, and the user-patch overlay.
 //!
 //! Zero third-party dependencies (no toml/serde), no `unsafe`; plain data

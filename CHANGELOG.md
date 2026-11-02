@@ -4,6 +4,107 @@
 
 ## [Unreleased]
 
+### feat(userdb)：候选窗删除自造词（悬停高亮 + 🗑 进入删除模式 + 点击删除）；选词持久化四路复核
+
+- **选词持久化（既有能力，本轮复核为四路闭环）**：数字/空格/Enter/
+  标点等键盘提交、候选窗鼠标点选、Shift 切换附带提交与析构兜底——每次
+  提交即学习并立即快照落盘（`$XDG_DATA_HOME/fcitx5/ior/userdb.tsv`，
+  保存即压实），启动加载 + mtime 差 30 天半衰衰减，跨重启生效。
+- **engine-core**：`user_dict::forget`（删单条学习记录：键归一化、
+  空键回收、保序）；`session::delete_flat` + `DeleteOutcome`——删除键
+  与 `commit_candidate` 的学习键严格镜像（前缀 span 候选删 span 键、
+  整句/全输入候选删 normalized decode 键），组合原样保留，删后候选即时
+  失去自学习加权；词库原词保留，非自造词返回 `NotUserWord`。
+- **ABI v2 纯增补**：`ior_engine_candidate_delete(engine,
+  page_local_index)`（ffi_userdict.rs，第 32 个 `ior_` 符号；0 已删 /
+  1 非自造词 / 2 越界 / -1 null，容忍 null engine）。
+- **C++ 薄壳**：状态区新增 `ior-delword` 动作（候选窗右上角 Del
+  word / 托盘菜单）。点击进入一次性删除模式：候选窗 aux 行提示，
+  鼠标悬停高亮为 classicui 原生；点击要删的候选即删并立即
+  `userdb_save` 落盘，Esc（仅退出模式、组合不丢）/ 任意按键 / 再点
+  动作退出。
+- **平台约束记录**（fcitx5 5.1.7 classicui 源码复核）：候选 hover 无
+  IME 回调、仅左键点击转发为 `CandidateWord::select`，故「悬停删除」
+  以「悬停高亮 + 角标进入删除模式 + 点词删除」实现，全部走 stock
+  fcitx5 API。
+- 顺带修复在途全角代码的 clippy/fmt 违规（width.rs 文档续行缩进、
+  ffi_width.rs 冗余指针转换）。
+
+### chore(data)：移除 rime 原始件，只保留 ior 格式
+
+- 删除上游双拼 schema 原文 `data/double-pinyin/rime/` 与转换脚本
+  `scripts/convert-rime-double-pinyin.py`：ior 键位表 `*.tsv` 已入库，
+  上游出处/许可保留在表头与 `data/README.md`。
+- 删除 `docs/ROADMAP-RIME-PARITY.md` 及 README/代码注释中的引用；
+  README 里程碑表的 (=P0)–(=P6) 对照同步移除。
+- 词库源 `data/dicts/luna_pinyin.dict.yaml` 与 `essay.txt` 同步删除：预编译
+  产物 `core.ior`（9.0 MB）/ `core.gram`（5.9 MB）改为入库（`.gitignore` 加
+  `!data/dicts/*` 例外），上游出处与许可（LGPL-3.0 衍生数据）保留在
+  `data/README.md` 来源表。
+- `scripts/install-core-dict.sh` 改为纯安装（复制入库产物，不再现场
+  compile/train）；重建词库需自行获取上游 rime 词库后用 dict-tools 编译。
+
+### fix(fcitx5)：Shift 中英切换最终修复——AltTrigger 先于引擎派发（实证）
+
+- 日志实证（引擎入口打点 + journal）：清空前 Shift_L **从未到达**
+  引擎 `keyEvent`（普通键全部到达）——fcitx5 的全局
+  `Hotkey/AltTriggerKeys`（默认 `Shift_L`）在**引擎派发之前**消费
+  Shift，此前"薄壳 filterAndAccept 抢先"的修复从未生效过。
+- 最终修复：清空 `~/.config/fcitx5/config` 的 `[Hotkey/AltTriggerKeys]`
+  （原文件备份为 `config.bak-ior`）。清空后 Shift 到达引擎，薄壳的
+  释放切换 + 修饰检测逻辑即正常工作（journal 见
+  `TOGGLE 0->1/1->0`；英文模式字母 Forward，修饰用法不误切）。
+- 引擎内保留 Shift 按下/释放消费逻辑（其他宿主/无 AltTrigger 环境
+  仍有效），`ioraddon.cpp` 注释更新为实证结论。
+- 注意：AltTriggerKeys 是**全局**配置，影响所有输入法的 Shift
+  切换；改用 Ctrl+Space 等主触发键或托盘切换输入法。
+
+### fix(engine)：默认半角符号 + 全角开关与标点解耦
+
+- 用户反馈：托盘切到半角后 `，。` 仍是全角——中文标点映射默认
+  `chinese_punct = true` 抢了标点。现默认 **false（半角符号）**，
+  engine-core 与 ior-config 两处默认同步；要中文标点显式配置
+  `[engine] chinese_punct = true`。
+- 全角开关不再碰标点（对齐搜狗：半/全角与中/英标点是两个独立开关）：
+  `width::intercept` 只认字母/数字/空格，标点一律走 `chinese_punct`
+  （默认半角透传）；C++ idle gate 的全角放行同步去掉标点项。
+- 引擎侧已有行为不变：显式 `chinese_punct = true` 时标点映射与
+  引号交替、候选优先上屏等语义保持（测试改为显式 opt-in）。
+
+### feat(engine)：全角/半角可配 + 状态区（右上角）切换，默认半角
+
+- 配置：`[engine] full_width`（bool，默认 `false` 半角），engine-core
+  `EngineConfig`/`Session` 与 ior-config schema 同步；运行期经
+  `ior_engine_full_width` / `ior_engine_set_full_width`（ABI v2 增补）
+  即时切换，不动未上屏编码。
+- 语义（对齐搜狗/rime 的宽度开关）：全角时空闲 ASCII 键上屏全角形——
+  中文模式数字、空格（`１２３`、全角空格 `U+3000`）与大写字母，
+  拼音组码与中文标点映射不受影响；英文模式全部可打印 ASCII
+  （`ａｂｃ１２３！`）＋全角空格。组合中的数字选词、空格上屏优先级
+  不变；半角为纯透传（零行为差异）。
+- C++ 薄壳：注册状态区动作 `ior-fullwidth`（**托盘图标右键菜单 +
+  候选窗右上角**，fcitx5 `SimpleAction` 勾选式），`activate()` 时重挂
+  状态区；idle gate 放行全角模式下的数字/空格/标点到引擎；切换后
+  面板短暂显示 Full-width / Half-width（复用 1s 一次性清除 timer，
+  提示函数泛化为 `showHint(ic, text)`）。
+- 引擎侧新增 `engine-core/src/width.rs`（纯函数映射 + 接管判定 +
+  5 组单测：半角透传、英文全角、中文数字/空格、组合中语义保持、
+  往返设置）；ior-config 增补类型校验用例。
+
+### fix(fcitx5)：Shift 中英切换被 AltTrigger 抢键 + 模式提示
+
+- 症状：ior 模式下按 Shift 不切中英文，而是整个输入法被切走。
+  根因：C++ 薄壳只记录 Shift 按下而不消费，fcitx5 全局默认
+  `Hotkey/AltTriggerKeys=Shift_L` 抢走该按下事件直接切换输入法，
+  引擎的「释放时切换」永远等不到 release。
+- 修复：薄壳对 Shift_L/Shift_R **按下 filterAndAccept、释放 filter**
+  完全接管；释放时（且未被用作修饰键）经 `ior_engine_set_ascii_mode`
+  切换中/英，与 rime 同键位行为一致（仍不透传给 `process_key`，
+  两种机制择一）。
+- 切换成功后面板短暂显示 `English` / `Chinese` 提示（1s 一次性定时
+  清除；经 `ic->watch()` 防悬垂，组合中不覆盖候选窗）。
+- `IorEngine` 保存 `eventLoop_` 指针用于该一次性定时器。
+
 ### 候选对齐 rime：前缀跨度瀑布 + 部分上屏 + 候选窗口扩容
 
 - 逻辑对齐 rime `script_translator`：整词候选之后，按最优切分的**前缀

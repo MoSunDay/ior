@@ -30,8 +30,10 @@
 //! ```
 //!
 //! 19 exported symbols in total, plus the 10 `ior_engine_voice_*`
-//! symbols declared in [`crate::ffi_voice`] (29 overall; ABI stays at
-//! version 2, additive-only).
+//! symbols in [`crate::ffi_voice`], the 2 full-width symbols in
+//! [`crate::ffi_width`] and the 1 deletion symbol in
+//! [`crate::ffi_userdict`] (32 overall; ABI stays at version 2,
+//! additive-only).
 //!
 //! # Contract
 //!
@@ -52,7 +54,9 @@
 //!   the current page (candidate clicks: what is displayed is what is
 //!   committed, regardless of which page is shown) and returns the
 //!   committed text ("" for an invalid index); the pending commit is set
-//!   and the composition is reset.
+//!   and the composition is reset. `ior_engine_candidate_delete` (in
+//!   [`crate::ffi_userdict`]) removes the learned entry behind the same
+//!   page-local index instead of committing, keeping the composition.
 //! - `ior_engine_ascii_mode` / `ior_engine_set_ascii_mode` report/force the
 //!   Chinese(0)/English(1) mode. Changing the mode routes through the core
 //!   Shift transition, so a pending preedit is handled per `shift_action`;

@@ -3,8 +3,8 @@
 //! A `.gram` file holds character unigram/bigram/trigram counts distilled
 //! from a pinyin→hanzi word list (dict-tools `train`: **within-word**
 //! character n-grams, weighted by word frequency — the only real signal
-//! available offline; corpus-level models are future data, see the P2 row
-//! of `docs/ROADMAP-RIME-PARITY.md`). engine-core parses it into a
+//! available offline; corpus-level models are future data). engine-core
+//! parses it into a
 //! [`GramModel`] (zero I/O: bytes in, model out) and [`crate::beam`] scores
 //! whole-sentence candidates with **Stupid Backoff** — trigram → bigram →
 //! unigram, fixed penalty [`BACKOFF_PENALTY`] = 0.4 per backoff level, no

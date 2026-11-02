@@ -6,4 +6,6 @@ data/models/
 *.gguf
 *.ior
 *.gram
+!data/dicts/*.ior
+!data/dicts/*.gram
 /build/

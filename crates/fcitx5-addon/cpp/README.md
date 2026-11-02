@@ -55,9 +55,11 @@ fcitx5-remote -s ior           # 切到 ior（也可用 fcitx5-configtool）
 
 ## C ABI（v2）
 
-`ior_engine_abi_version()` 返回 **2**；共 **29 个** `ior_` 符号
-（18 个 v2 核心 + 10 个 voice 增补 + 1 个 `page_key_direction` 翻页键查询）
-（声明见 `ioraddon.h`，Rust 侧源 `crates/fcitx5-addon/src/ffi.rs`）。
+`ior_engine_abi_version()` 返回 **2**；共 **32 个** `ior_` 符号
+（18 个 v2 核心 + 10 个 voice 增补 + 1 个 `page_key_direction` 翻页键查询
++ 2 个全角 `full_width`/`set_full_width` + 1 个删除自造词
+`candidate_delete`）（声明见 `ioraddon.h`，Rust 侧源
+`crates/fcitx5-addon/src/ffi.rs` 等 `ffi_*.rs`）。
 v2 相对 v1 的变化：
 
 - **候选只暴露当前页**：`ior_engine_candidate_count` / `candidate`
@@ -69,13 +71,40 @@ v2 相对 v1 的变化：
   page_local_index)` 直接提交当前页第 N 个候选（返回提交文本，无效
   索引返回 `""`），学习/清码与数字选词一致。替代 v1 的「合成数字
   键」方案，修复翻页后点击错选。
+- **候选窗删除自造词**：`ior_engine_candidate_delete(engine,
+  page_local_index)`（纯追加，ABI 仍为 2）是 select 的删除对应物——
+  按同一页内索引删掉候选背后的**自学习记录**（0 已删 / 1 非自造词、
+  词库原词只读 / 2 越界 / -1 null），组合不丢，删除键与学习键严格
+  镜像（span 候选删 span 键、整句候选删 normalized 键）。薄壳在
+  候选窗右上角注册状态区动作 `ior-delword`（Del word）：点击进入
+  一次性删除模式（aux 行提示），悬停高亮为 classicui 原生，再点击
+  要删的候选即删并立即 `userdb_save` 落盘；Esc / 任意键 / 再点动作
+  退出。classicui 5.1.7 只把候选左键点击转发给引擎（hover 无 IME
+  回调），故「悬停删除」以悬停高亮 + 角标进入删除模式实现。
 - **中英切换**：`ior_engine_ascii_mode`（0 中文 / 1 英文）与
   `ior_engine_set_ascii_mode`（变化时走 core Shift 语义处理未上屏
   编码：CommitRaw/CommitBest/Clear 可配；返回新状态）。
   `ior_engine_process_key` 的 `Shift_L`/`Shift_R` keysym 也会切换
   （**按下即触发**）；本薄壳走「释放时切换 + 修饰检测」路径，不把
   Shift 透传给 `process_key` —— 两种机制**择一使用**，同时启用会
-  切换两次。
+  切换两次。薄壳对 Shift **按下与释放都消费**（filterAndAccept）。
+- **AltTrigger 前置（实证要点）**：fcitx5 全局默认
+  `Hotkey/AltTriggerKeys=Shift_L` 在**引擎派发之前**消费 Shift——
+  journal 打点证明引擎从未收到 Shift（普通键均到达），薄壳的
+  filterAndAccept 赢不了这个时序。因此用户须清空
+  `~/.config/fcitx5/config` 的 `[Hotkey/AltTriggerKeys]`（备份
+  `config.bak-ior`），Shift 才会进入 ior 完成中英切换。切换成功后
+  面板短暂显示 English / Chinese 提示（1s 后自动清除，组合中不清）。
+- **全角/半角**：`ior_engine_full_width`（0 半角，默认 / 1 全角）与
+  `ior_engine_set_full_width`（设新值返回新状态；不动未上屏编码）。
+  全角时空闲键上屏全角形：中文模式数字/空格/大写字母（`１２３`、
+  `U+3000`、`Ａ`，拼音组码不变），英文模式字母/数字/空格
+  （`ａｂｃ１２３`）。**标点不归此开关管**，只跟 `chinese_punct` 走
+  （默认 false 半角符号，与 半/全角 相互独立，对齐搜狗双开关）。C++ 薄壳注册状态区动作
+  `ior-fullwidth`（fcitx5 托盘图标右键菜单 + 候选窗右侧，勾选式），
+  每次激活重新挂到输入上下文状态区；切换后面板短暂显示
+  Full-width / Half-width 提示。默认半角，`[engine] full_width = true`
+  可改启动默认。
 - **中文标点**：中文模式下可打印 ASCII 标点经引擎映射后上屏
   （`，。；：？！（）【】《》……——` 等，引号 `"`/`'` 交替开闭）；
   编码未上屏时先提交首选候选再接标点；`chinese_punct` 关闭或会话

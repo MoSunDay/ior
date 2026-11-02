@@ -276,6 +276,7 @@ fn to_engine_config(cfg: &user_config::Config) -> EngineConfig {
         next_page_keys: cfg.engine.next_page_keys.clone(),
         max_candidates: cfg.engine.max_candidates,
         chinese_punct: cfg.engine.chinese_punct,
+        full_width: cfg.engine.full_width,
         shift_action,
         enter_action,
     }
@@ -285,8 +286,9 @@ fn to_engine_config(cfg: &user_config::Config) -> EngineConfig {
 /// buffers. Returns the FFI status code:
 /// `0` forwarded, `1` editing, `2` committed (see `take_commit`).
 pub fn process_key(engine: &mut IorEngine, ch: char) -> i32 {
-    // English mode: letters belong to the application, buffers stay empty.
-    if engine.session.ascii_mode && ch.is_ascii_alphabetic() {
+    // English mode: letters belong to the application, buffers stay
+    // empty — unless full-width mode claims them first (ａｂｃ).
+    if engine.session.ascii_mode && !engine.session.full_width && ch.is_ascii_alphabetic() {
         return 0;
     }
     let result = session::process_key(&mut engine.session, ch);
@@ -351,6 +353,25 @@ pub fn select_page_local(engine: &mut IorEngine, page_local_index: u32) -> bool 
     let flat_index = engine.session.page * size + page_local_index as usize;
     let result = session::select_flat(&mut engine.session, flat_index);
     apply_result(engine, result) == 2
+}
+
+/// Removes the learned entry behind the candidate at `page_local_index`
+/// of the **current page** — the delete-on-click counterpart of
+/// [`select_page_local`]. Returns 0 = deleted, 1 = the candidate backs no
+/// learned word (dictionary hits are read-only), 2 = index out of range.
+/// The composition is kept intact; the host refreshes the panel and
+/// persists the userdb itself.
+pub fn delete_page_local(engine: &mut IorEngine, page_local_index: u32) -> i32 {
+    let size = engine.session.config.page_size.max(1);
+    if page_local_index as usize >= size {
+        return 2;
+    }
+    let flat_index = engine.session.page * size + page_local_index as usize;
+    match session::delete_flat(&mut engine.session, flat_index) {
+        session::DeleteOutcome::Deleted => 0,
+        session::DeleteOutcome::NotUserWord => 1,
+        session::DeleteOutcome::OutOfRange => 2,
+    }
 }
 
 /// Whether the session is in English (ASCII) mode.

@@ -9,7 +9,12 @@
 //!     before any dictionary match, the boost is realized as position);
 //!  3. whole-phrase dictionary matches follow, one segmentation at a time;
 //!  4. a composed candidate is built from the top single-syllable entry of
-//!     each segment of the best segmentation;
+//!     each segment of the best segmentation, then rime-style prefix spans
+//!     follow: words covering only the first k syllables of that
+//!     segmentation (k = len-1 .. 1, longest span first), so the list keeps
+//!     going after whole-phrase matches run out and a shorter-span pick
+//!     commits its hanzi while the uncovered letters stay typed (the
+//!     session trims via the candidate pinyin);
 //!  5. single-syllable inputs need no extra handling: step 3 already appends
 //!     every (non-top included) dictionary entry for that syllable;
 //!  6. 简拼 candidates (pure initial-letter input) are appended after all
@@ -142,6 +147,28 @@ pub fn candidates_with(
         }
         if complete {
             push_unique(&mut out, &mut seen, composed, best_key, limit);
+        }
+
+        // (c2) rime-style prefix spans: words anchored at the start of the
+        // best segmentation that cover only its first `span` syllables,
+        // longest span first (`nihao` -> `ni'hao` phrases, then `ni`
+        // homophones 你/妮/泥...). Committing such a candidate hands over
+        // its hanzi while the uncovered letters stay typed — the session
+        // derives the covered prefix from the candidate's `pinyin` key.
+        // Learned entries of the span key come first, mirroring (a)/(b).
+        for span in (1..combos[0].len()).rev() {
+            let key = combos[0][..span].join("'");
+            if let Some(u) = user {
+                for (hanzi, _freq) in user_lookup_variants(u, fuzzy, &key) {
+                    push_unique(&mut out, &mut seen, hanzi, key.clone(), limit);
+                }
+            }
+            for (hanzi, _freq) in dict_lookup_variants(dict, fuzzy, &key) {
+                push_unique(&mut out, &mut seen, hanzi, key.clone(), limit);
+            }
+            if out.len() >= limit {
+                return out;
+            }
         }
     }
 

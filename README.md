@@ -50,7 +50,7 @@ cargo run -p dict-tools -- export /tmp/extra.ior /tmp/extra-back.tsv
 cargo run -p dict-tools -- merge  /tmp/extra.ior /tmp/extra.ior -o /tmp/merged.ior
 cargo run -p dict-tools -- --help
 
-# 全量词库：安装脚本默认用 --simplify 在编译期转简体
+# 全量词库：安装入库的预编译 core.ior / core.gram（--user 装到用户目录）
 scripts/install-core-dict.sh
 
 # 二期模型下载计划（本地 onnx/GGUF 清单，V2+ 实现；V1 用远端服务）
@@ -97,13 +97,19 @@ double_pinyin = "natural"  # off | natural | xiaohe | mspy | custom
 page_size = 5
 prev_page_keys = ["Page_Up", "minus"]    # 翻页键可配（rime 风格，仅候选窗激活时生效）
 next_page_keys = ["Page_Down", "equal"]
-max_candidates = 10
-chinese_punct = true
+max_candidates = 50
+chinese_punct = false       # 中文标点映射（，。）；默认 false = 半角符号
+full_width = false          # 全角（１２３ / ａｂｃ / 全角空格）；默认半角，托盘图标与候选窗右侧可即时切换
 user_learning = true
 shift_action = "commit"    # commit | temp | none
 enter_action = "raw"       # raw（回车上屏拼音原码）| candidate（同空格上屏首选）
 
 # 只写想改的项，其余取默认（模糊音默认全关）
+#
+# Shift 中英切换前置要求：fcitx5 全局默认 [Hotkey/AltTriggerKeys] 0=Shift_L
+# 会在引擎之前把 Shift 消费掉切走整个输入法（journal 实证引擎收不到
+# Shift）。需在 ~/.config/fcitx5/config 中清空该段（删除 0=Shift_L 行），
+# Shift 才归 ior 做中英切换；输入法间切换改用 Ctrl+Space 或托盘。
 [engine.fuzzy]
 z_zh = true
 an_ang = true
@@ -128,25 +134,22 @@ endpoint = "http://node02:8001/v1/chat/completions"
 `IOR_LLM_API_KEY` 而非配置文件）见 `docs/NODE02-DEPLOY.md`；验证清单见
 `docs/VOICE-VERIFY.md`。
 
-`[switches]` / `[punct]` 已被解析保留，但尚未驱动会话（P4 收尾项）；完整差距与
-后续顺序见 `docs/ROADMAP-RIME-PARITY.md`。
+`[switches]` / `[punct]` 已被解析保留，但尚未驱动会话（P4 收尾项）。
 
 ## 里程碑
 
 | 阶段 | 内容 |
 |------|------|
 | **M0 ✅ 完成** | 骨架 + 薄壳 + 词级转换打通，GTK/Qt/XIM 三前端实测通过（2026-10-31，见 `docs/M0-FRONTEND-TEST.md`） |
-| **M1 (=P0) ✅ 完成** | `.ior` v2 + engine-core 加载/多词典叠加；luna + essay preset 经 OpenCC t2s 后 427,661 简体词条 / 9.4 MB，真机验证（`docs/M2-VERIFY.md`） |
-| **M2a (=P1) ✅ 完成** | 查询侧模糊音/简拼 + 自然碼/小鶴/微軟三套内置双拼，`config.toml` 可选 |
-| M2b (=P2) 🟡 词表模型可用 | `.gram` trigram + beam + bench/互锁 ✅；安装脚本训练/安装 `core.gram`，addon 启动加载，整句真机通过；真实语料模型与准确率基线待做 |
-| M3 (=P3) 🟡 部分 | 用户词典持久化（append-log+snapshot、时间衰减、TSV 备份）✅ 真机实测；整句自动造词待实现 |
-| M3.5 (=P4) 🟡 部分 | `ior-config` TOML/schema/patch + 启动映射 ✅；switches/punct 生效、热重载、配置 UI 待做 |
-| M4 (=P5) 🟡 部分 | 分页/标点/Shift 中英/FFI v2 ✅ 真机实测；以词定字/符号面板/per-IC/状态区/联想待做 |
-| M4+/M5 (=P6) | 编译期简体（OpenCC t2s）✅、评测体系（CI 门禁）✅；运行时简繁切换、反查与码表方案为 backlog |
+| **M1 ✅ 完成** | `.ior` v2 + engine-core 加载/多词典叠加；luna + essay preset 经 OpenCC t2s 后 427,661 简体词条 / 9.4 MB，真机验证（`docs/M2-VERIFY.md`） |
+| **M2a ✅ 完成** | 查询侧模糊音/简拼 + 自然碼/小鶴/微軟三套内置双拼，`config.toml` 可选 |
+| M2b 🟡 词表模型可用 | `.gram` trigram + beam + bench/互锁 ✅；安装脚本训练/安装 `core.gram`，addon 启动加载，整句真机通过；真实语料模型与准确率基线待做 |
+| M3 🟡 部分 | 用户词典持久化（append-log+snapshot、时间衰减、TSV 备份）✅ 真机实测；选词即学习即落盘（键盘/点选四路）；候选窗 🗑 删除自造词 ✅；整句自动造词待实现 |
+| M3.5 🟡 部分 | `ior-config` TOML/schema/patch + 启动映射 ✅；switches/punct 生效、热重载、配置 UI 待做 |
+| M4 🟡 部分 | 分页/标点/Shift 中英/FFI v2 ✅ 真机实测；以词定字/符号面板/per-IC/状态区/联想待做 |
+| M4+/M5 | 编译期简体（OpenCC t2s）✅、评测体系（CI 门禁）✅；运行时简繁切换、反查与码表方案为 backlog |
 | 二期 V1 ✅ 远端先行 | 按键说话→采集→node02 Qwen3-ASR 转写（+可选润色）：voice crate、FFI v2 增补 10 符号、C++ 热键/轮询/上屏；部署脚本与文档见 `docs/NODE02-DEPLOY.md` |
 | 二期 V2~V4 | 语音：V2 本地 VAD+流式 ASR → V3 批量精解码 → V4 模型管理与下载 |
-
-完整差距对照与依赖图见 `docs/ROADMAP-RIME-PARITY.md`。
 
 ## 数据版权注意
 

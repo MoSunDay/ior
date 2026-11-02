@@ -2,9 +2,9 @@
 //! typed-code -> full-pinyin transform.
 //!
 //! The real scheme tables (自然碼/小鶴/微軟) live in
-//! `data/double-pinyin/{natural,flypy,mspy}.tsv`, converted from the
-//! rime schema algebra by `scripts/convert-rime-double-pinyin.py`; the
-//! roundtrip tests below load them verbatim. A session can also load a
+//! `data/double-pinyin/{natural,flypy,mspy}.tsv` (converted once from
+//! the upstream rime-double-pinyin schema algebra); the roundtrip tests
+//! below load them verbatim. A session can also load a
 //! custom table from host-supplied text via [`parse_tsv`].
 //!
 //! Table format (TSV, one rule per line, `#` comments and blanks skipped):
@@ -111,8 +111,8 @@ pub fn parse_tsv(text: &str) -> Result<DpTable, String> {
     Ok(table)
 }
 
-/// The real scheme tables converted from the rime schema algebra by
-/// `scripts/convert-rime-double-pinyin.py`. Bundled via `include_str!`
+/// The real scheme tables (converted once from the upstream
+/// rime-double-pinyin schema algebra). Bundled via `include_str!`
 /// so the engine stays I/O-free; parse failures are impossible for the
 /// checked-in files (the roundtrip tests below load them verbatim).
 pub fn builtin(scheme: DoublePinyin) -> Option<DpTable> {

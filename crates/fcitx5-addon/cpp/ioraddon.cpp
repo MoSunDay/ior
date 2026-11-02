@@ -3,6 +3,9 @@
 #include "ioraddon.h"
 
 #include <fcitx-utils/event.h>
+#include <fcitx/action.h>
+#include <fcitx/instance.h>
+#include <fcitx/statusarea.h>
 #include <fcitx-utils/key.h>
 #include <fcitx/addonmanager.h>
 #include <fcitx/event.h>
@@ -87,10 +90,36 @@ std::filesystem::path userdbPath() {
 // Voice poll cadence: 50ms is far below human perception of commit
 // latency while staying negligible on the event loop.
 constexpr uint64_t kVoicePollUsec = 50'000;
+// How long the "Chinese"/"English" toggle hint stays on the panel.
+constexpr uint64_t kModeHintUsec = 1'000'000;
 
-IorEngine::IorEngine(fcitx::EventLoop* eventLoop) : raw_(ior_engine_new()) {
+IorEngine::IorEngine(fcitx::Instance* instance, fcitx::EventLoop* eventLoop)
+    : raw_(ior_engine_new()), eventLoop_(eventLoop), instance_(instance) {
     if (raw_ == nullptr) {
         return;
+    }
+    if (instance_ != nullptr) {
+        // Status-area toggle (tray icon menu / candidate window edge);
+        // activate() re-adds it to every input context's status area.
+        widthAction_ = std::make_unique<fcitx::SimpleAction>();
+        widthAction_->setShortText("Full-width");
+        widthAction_->setLongText("Toggle full-width input");
+        widthAction_->setCheckable(true);
+        widthAction_->setChecked(ior_engine_full_width(raw_) != 0);
+        widthAction_->connect<fcitx::SimpleAction::Activated>(
+            [this](fcitx::InputContext* ic) { toggleWidth(ic); });
+        widthAction_->registerAction("ior-fullwidth",
+                                     &instance_->userInterfaceManager());
+        // One-shot "delete learned word" mode: clicking a candidate then
+        // removes it from the user dictionary instead of committing.
+        deleteAction_ = std::make_unique<fcitx::SimpleAction>();
+        deleteAction_->setShortText("Del word");
+        deleteAction_->setLongText(
+            "Delete a learned word (click it in the candidate list)");
+        deleteAction_->connect<fcitx::SimpleAction::Activated>(
+            [this](fcitx::InputContext* ic) { toggleDeleteMode(ic); });
+        deleteAction_->registerAction("ior-delword",
+                                      &instance_->userInterfaceManager());
     }
     if (eventLoop != nullptr && ior_engine_voice_hotkey_keysym(raw_) != 0) {
         voicePollEvent_ = eventLoop->addTimeEvent(
@@ -153,26 +182,55 @@ void IorEngine::keyEvent(const fcitx::InputMethodEntry& /*entry*/,
         return;
     }
 
+    // Delete-learned-word mode ends with the first key press: Esc just
+    // closes it (the composition survives), every other key falls
+    // through to normal processing. Key releases are none of its
+    // business (a pending Shift release must still run its own path).
+    if (deleteMode_ && !keyEvent.isRelease()) {
+        exitDeleteMode();
+        if (sym == FcitxKey_Escape) {
+            keyEvent.filterAndAccept();
+            updateUI(*ic);
+            return;
+        }
+    }
+
     // Shift toggles the Chinese/English mode on RELEASE, and only when it
-    // was not used as a modifier (no other key pressed while held). Press
-    // events are recorded but never forwarded to ior_engine_process_key,
-    // whose Shift handling toggles on press — enabling both would toggle
-    // twice. Hosts must pick exactly one of the two mechanisms.
+    // was not used as a modifier (no other key pressed while held). Both
+    // the press and the release are consumed here and never forwarded to
+    // ior_engine_process_key, whose Shift handling toggles on press —
+    // enabling both would toggle twice.
+    //
+    // NOTE: fcitx5's global AltTriggerKeys (Shift_L by default) is checked
+    // BEFORE engine dispatch, so it would switch the whole input method
+    // away from ior before this handler ever sees the key; filterAndAccept
+    // cannot win that race. Users must clear [Hotkey/AltTriggerKeys] in
+    // ~/.config/fcitx5/config (see README) — with that cleared, Shift
+    // reaches this handler and stays inside ior.
     if (sym == FcitxKey_Shift_L || sym == FcitxKey_Shift_R) {
         std::string committed;
+        bool toggled = false;
         if (keyEvent.isRelease()) {
             if (shiftDown_ && !shiftUsed_) {
                 const auto current = ior_engine_ascii_mode(raw_);
                 ior_engine_set_ascii_mode(raw_, current != 0 ? 0u : 1u);
                 committed = ior_engine_take_commit(raw_); // pending preedit
+                toggled = true;
                 keyEvent.filterAndAccept();
+            } else {
+                keyEvent.filter(); // orphan release: its press was consumed
             }
             shiftDown_ = false;
         } else {
             shiftDown_ = true;
             shiftUsed_ = false;
+            keyEvent.filterAndAccept(); // keep AltTrigger away from Shift
         }
         updateUI(*ic);
+        if (toggled) {
+            showHint(*ic, ior_engine_ascii_mode(raw_) != 0 ? "English"
+                                                           : "Chinese");
+        }
         if (!committed.empty()) {
             ic->commitString(committed);
             saveUserdb(); // mode switch may have committed (and learned)
@@ -209,8 +267,14 @@ void IorEngine::keyEvent(const fcitx::InputMethodEntry& /*entry*/,
     // punctuation reaches the engine too (it commits the mapped Chinese
     // punctuation). Everything else passes straight through.
     const bool chineseMode = ior_engine_ascii_mode(raw_) == 0;
+    const bool fullWidth = ior_engine_full_width(raw_) != 0;
+    const bool digit = sym >= '0' && sym <= '9';
     if (ior_engine_preedit(raw_)[0] == '\0' && !mayStartComposition(sym) &&
-        !(chineseMode && isPunctKey(sym))) {
+        !(chineseMode && isPunctKey(sym)) &&
+        // Full-width: idle digits/space reach the engine, which commits
+        // their full-width forms (punctuation follows chinese_punct and
+        // is covered by the clause above).
+        !(fullWidth && (digit || sym == ' '))) {
         return;
     }
 
@@ -233,8 +297,58 @@ void IorEngine::keyEvent(const fcitx::InputMethodEntry& /*entry*/,
     }
 }
 
+void IorEngine::activate(const fcitx::InputMethodEntry& /*entry*/,
+                         fcitx::InputContextEvent& event) {
+    if (widthAction_ != nullptr && event.inputContext() != nullptr) {
+        event.inputContext()->statusArea().addAction(
+            fcitx::StatusGroup::InputMethod, widthAction_.get());
+    }
+    if (deleteAction_ != nullptr && event.inputContext() != nullptr) {
+        event.inputContext()->statusArea().addAction(
+            fcitx::StatusGroup::InputMethod, deleteAction_.get());
+    }
+}
+
+void IorEngine::toggleWidth(fcitx::InputContext* ic) {
+    if (raw_ == nullptr) {
+        return;
+    }
+    const auto now = ior_engine_set_full_width(
+        raw_, ior_engine_full_width(raw_) != 0 ? 0u : 1u);
+    if (widthAction_ != nullptr) {
+        widthAction_->setChecked(now != 0);
+        if (ic != nullptr) {
+            widthAction_->update(ic);
+        }
+    }
+    if (ic != nullptr) {
+        updateUI(*ic);
+        showHint(*ic, now != 0 ? "Full-width" : "Half-width");
+    }
+}
+
+// Status-area callback: enters (or cancels) the one-shot
+// delete-learned-word mode. The panel announces it via an aux line while
+// composing; the next candidate click deletes instead of committing.
+void IorEngine::toggleDeleteMode(fcitx::InputContext* ic) {
+    if (raw_ == nullptr) {
+        return;
+    }
+    deleteMode_ = !deleteMode_;
+    if (deleteAction_ != nullptr && ic != nullptr) {
+        deleteAction_->update(ic);
+    }
+    if (ic != nullptr) {
+        updateUI(*ic);
+        showHint(*ic, deleteMode_
+                         ? "Click a candidate to delete it (Esc exits)"
+                         : "Delete mode off");
+    }
+}
+
 void IorEngine::reset(const fcitx::InputMethodEntry& /*entry*/,
                       fcitx::InputContextEvent& event) {
+    exitDeleteMode();
     if (raw_ != nullptr) {
         ior_engine_reset(raw_);
     }
@@ -266,6 +380,13 @@ void IorEngine::updateUI(fcitx::InputContext& ic) {
         if (voiceState != 0) {
             ic.updateUserInterface(fcitx::UserInterfaceComponent::InputPanel);
             return; // no candidates while the mic is open
+        }
+        // Delete mode rides along as an aux line so the click target is
+        // announced right above the candidates it will act on.
+        if (deleteMode_) {
+            panel.setAuxUp(fcitx::Text(
+                "Click a candidate to delete it from the user dictionary "
+                "(Esc exits)"));
         }
         // The panel preedit above keeps the raw pinyin out of the client's
         // text field; the candidate window still shows the composition.
@@ -302,6 +423,36 @@ void IorEngine::updateUI(fcitx::InputContext& ic) {
         panel.setCandidateList(std::move(list));
     }
     ic.updateUserInterface(fcitx::UserInterfaceComponent::InputPanel);
+}
+
+// Brief panel hint after a mode toggle ("Chinese"/"English" on Shift,
+// "Full-width"/"Half-width" on the status-area action), akin to fcitx5's
+// own input-method-switch popup. A one-shot timer (replacing any pending
+// one) clears it; while composing the engine state wins and the hint
+// simply fades with the next updateUI.
+void IorEngine::showHint(fcitx::InputContext& ic, const std::string& text) {
+    if (raw_ == nullptr) {
+        return;
+    }
+    ic.inputPanel().setAuxUp(fcitx::Text(text));
+    ic.updateUserInterface(fcitx::UserInterfaceComponent::InputPanel);
+    if (eventLoop_ == nullptr) {
+        return; // no loop (tests): hint stays until the next updateUI
+    }
+    const auto watcher = ic.watch(); // survive an IC destroyed meanwhile
+    modeHintEvent_ = eventLoop_->addTimeEvent(
+        CLOCK_MONOTONIC, fcitx::now(CLOCK_MONOTONIC) + kModeHintUsec,
+        kModeHintUsec / 10,
+        [this, watcher](fcitx::EventSourceTime* /*source*/, uint64_t) {
+            auto* live = watcher.get();
+            if (live != nullptr && raw_ != nullptr &&
+                ior_engine_preedit(raw_)[0] == '\0') {
+                live->inputPanel().reset();
+                live->updateUserInterface(
+                    fcitx::UserInterfaceComponent::InputPanel);
+            }
+            return false; // one-shot
+        });
 }
 
 // True when the key event is the configured voice hotkey (sym + exact
@@ -369,6 +520,26 @@ void IorCandidateWord::select(fcitx::InputContext* ic) const {
     if (engine_ == nullptr || ic == nullptr) {
         return;
     }
+    // Delete-learned-word mode: this click removes the learned entry
+    // behind the candidate (page-local index, same address space as the
+    // commit path below) instead of committing it. The mode is one-shot
+    // and the composition survives, so typing continues right after.
+    if (owner_ != nullptr && owner_->inDeleteMode()) {
+        owner_->exitDeleteMode();
+        const std::string word = text().toString();
+        const auto result = ior_engine_candidate_delete(engine_, index_);
+        if (result == 0) {
+            owner_->saveUserdb(); // deletion changes the persisted userdb
+            owner_->updateUI(*ic);
+            owner_->showHint(*ic, "Deleted learned word " + word);
+        } else {
+            owner_->updateUI(*ic);
+            owner_->showHint(*ic,
+                             word + " is not a learned word (result " +
+                                 std::to_string(result) + ")");
+        }
+        return;
+    }
     // Commit by page-local index (ABI v2): what the panel displays is what
     // gets committed, on every page — no synthetic digit keys that would
     // select the wrong row after paging.
@@ -381,7 +552,8 @@ void IorCandidateWord::select(fcitx::InputContext* ic) const {
 }
 
 fcitx::AddonInstance* IorEngineFactory::create(fcitx::AddonManager* m) {
-    return new IorEngine(m != nullptr ? m->eventLoop() : nullptr);
+    return new IorEngine(m != nullptr ? m->instance() : nullptr,
+                         m != nullptr ? m->eventLoop() : nullptr);
 }
 
 FCITX_ADDON_FACTORY(IorEngineFactory);

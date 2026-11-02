@@ -103,7 +103,13 @@ pub struct EngineConfig {
     /// Chinese punctuation mapping: when true (and the session is in
     /// Chinese mode with `ascii_punct` off), printable ASCII punctuation
     /// commits its Chinese counterpart instead of passing through.
+    /// Default false: half-width symbols, like the classic IMEs'
+    /// "半角符号" state.
     pub chinese_punct: bool,
+    /// Full-width (全角) input: idle digits/space (Chinese mode) and all
+    /// printable ASCII (English mode) commit full-width forms. Default
+    /// half-width; runtime-toggleable per session.
+    pub full_width: bool,
     /// How Shift leaving Chinese mode handles the un-committed preedit:
     /// commit it raw, commit the best candidate, or clear it.
     pub shift_action: ShiftAction,
@@ -121,8 +127,9 @@ impl Default for EngineConfig {
             page_size: 5,
             prev_page_keys: vec!["Page_Up".into(), "minus".into()],
             next_page_keys: vec!["Page_Down".into(), "equal".into()],
-            max_candidates: 10,
-            chinese_punct: true,
+            max_candidates: 50,
+            chinese_punct: false,
+            full_width: false,
             shift_action: ShiftAction::CommitRaw,
             enter_action: EnterAction::CommitRaw,
         }
@@ -191,7 +198,7 @@ mod tests {
         assert_eq!(normalize_syllable(&f, "zhang"), "zhang");
         let c = default_config();
         assert_eq!(c.page_size, 5);
-        assert_eq!(c.max_candidates, 10);
+        assert_eq!(c.max_candidates, 50);
         assert!(c.user_learning);
         assert_eq!(c.prev_page_keys, ["Page_Up", "minus"]);
         assert_eq!(c.next_page_keys, ["Page_Down", "equal"]);

@@ -18,10 +18,13 @@ use crate::lm::GramModel;
 use crate::punct;
 use crate::segmenter::best_segmentation;
 use crate::user_dict::{self, UserDict};
+use crate::width;
 
 /// Flat candidate-list length used for digit selection, space commit and
 /// paging math (still capped by `config.max_candidates` in `candidates`).
-const FLAT_CANDIDATE_LIMIT: usize = 10;
+/// rime's menu pages through dozens of candidates (`menu/page_size: 5`
+/// with many pages), so the flat window holds ten pages' worth.
+const FLAT_CANDIDATE_LIMIT: usize = 50;
 
 /// Everything an input method needs per client.
 #[derive(Debug)]
@@ -49,6 +52,9 @@ pub struct Session {
     /// When true, Chinese mode still emits raw ASCII punctuation
     /// (per-session override of `config.chinese_punct`).
     pub ascii_punct: bool,
+    /// Full-width (全角) input mode (per-session, seeded from
+    /// `config.full_width`); see [`crate::width`].
+    pub full_width: bool,
     /// Current candidate page index into the flat candidate list.
     pub page: usize,
     /// Paired-quote parity for Chinese punctuation.
@@ -75,6 +81,7 @@ pub fn new_session(config: EngineConfig) -> Session {
 /// layers merged with [`Dictionary::from_ior_layers`]).
 pub fn new_session_with(config: EngineConfig, dict: Dictionary) -> Session {
     let dp_table = double_pinyin::builtin(config.double_pinyin);
+    let full_width = config.full_width;
     Session {
         raw: String::new(),
         config,
@@ -84,6 +91,7 @@ pub fn new_session_with(config: EngineConfig, dict: Dictionary) -> Session {
         user_dict: user_dict::new(),
         ascii_mode: false,
         ascii_punct: false,
+        full_width,
         page: 0,
         punct: punct::new(),
     }
@@ -105,6 +113,10 @@ pub fn set_lm(s: &mut Session, lm: Option<GramModel>) {
 
 /// Feeds one key into the session and reports the outcome.
 pub fn process_key(s: &mut Session, ch: char) -> ProcessResult {
+    // Full-width mode claims idle ASCII keys first (see `width`).
+    if let Some(result) = width::intercept(s, ch) {
+        return result;
+    }
     match ch {
         'a'..='z' if s.ascii_mode => ProcessResult::Forwarded,
         'a'..='z' => {
@@ -198,10 +210,22 @@ fn handle_enter(s: &mut Session) -> ProcessResult {
     }
 }
 
-/// Commits `cand`: learn it under the normalized key of the *decode input*
-/// (the raw buffer, or its double-pinyin transform when that mode is on)
-/// when learning is on, clear the composition, and report the text.
+/// Commits `cand`. Full-input candidates learn under the normalized key of
+/// the *decode input* (the raw buffer, or its double-pinyin transform when
+/// that mode is on) and clear the composition. A rime-style prefix-span
+/// candidate (one whose `pinyin` covers only a leading part of the input,
+/// e.g. 你 from `ni` while `hao` remains) learns under its span key and
+/// leaves the uncovered letters typed, exactly like rime's translator:
+/// pick the word, keep typing the rest.
 fn commit_candidate(s: &mut Session, cand: &Candidate) -> ProcessResult {
+    if let Some(rest) = uncovered_remainder(s, cand) {
+        if s.config.user_learning {
+            user_dict::learn(&mut s.user_dict, &cand.pinyin, &cand.text);
+        }
+        s.raw = rest;
+        s.page = 0;
+        return ProcessResult::Committed(cand.text.clone());
+    }
     let key = normalized_key(&decode_input(s));
     if s.config.user_learning {
         if let Some(k) = key {
@@ -210,6 +234,39 @@ fn commit_candidate(s: &mut Session, cand: &Candidate) -> ProcessResult {
     }
     reset_composition(s);
     ProcessResult::Committed(cand.text.clone())
+}
+
+/// The still-uncovered tail of the raw buffer when `cand` is a prefix-span
+/// candidate: its `pinyin` key must literally cover a leading part of the
+/// decode input (syllable by syllable, `'` run separators skipped), and a
+/// non-empty tail must remain. `None` for full-input candidates (and for
+/// keys that do not literally cover the input, e.g. 简拼 `nh` -> `ni'hao`
+/// or prefix-fallback hits): those commit everything. In double-pinyin
+/// mode the covered syllables map back to two code letters each.
+fn uncovered_remainder(s: &Session, cand: &Candidate) -> Option<String> {
+    let decode = decode_input(s);
+    let mut pos = 0usize;
+    let mut syllables = 0usize;
+    for syl in cand.pinyin.split('\'') {
+        if !decode[pos..].starts_with(syl) {
+            return None;
+        }
+        pos += syl.len();
+        syllables += 1;
+        if decode[pos..].starts_with('\'') {
+            pos += 1;
+        }
+    }
+    let rest = decode[pos..].trim_start_matches('\'');
+    if rest.is_empty() {
+        return None;
+    }
+    if decode == s.raw {
+        return Some(rest.to_string());
+    }
+    // double-pinyin: two typed code letters per covered syllable.
+    let raw_pos = (2 * syllables).min(s.raw.len());
+    Some(s.raw[raw_pos..].to_string())
 }
 
 /// Drops the composition: raw buffer and page index. Shared by every path
@@ -276,6 +333,48 @@ pub fn select_flat(s: &mut Session, flat_index: usize) -> ProcessResult {
     match cands.get(flat_index) {
         Some(cand) => commit_candidate(s, cand),
         None => ProcessResult::Editing,
+    }
+}
+
+/// Outcome of [`delete_flat`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeleteOutcome {
+    /// The learned entry existed and was removed.
+    Deleted,
+    /// The candidate exists but backs no user-dictionary entry.
+    NotUserWord,
+    /// The flat index addresses no candidate.
+    OutOfRange,
+}
+
+/// Removes the user-learned entry behind the flat-list candidate at
+/// `flat_index` (callers derive it exactly like [`select_flat`]:
+/// `page * page_size + offset`). The key mirrors [`commit_candidate`]:
+/// a prefix-span candidate deletes under its span key, a full-input
+/// candidate under the normalized decode input, so what a selection
+/// learned is what a deletion removes. The composition is kept intact —
+/// the refreshed candidate list simply drops the learned boost and the
+/// dictionary word (if any) stays available. Dictionary-only words
+/// report [`DeleteOutcome::NotUserWord`]; deleting is dictionary
+/// management, not learning, so it also applies with `user_learning`
+/// off.
+pub fn delete_flat(s: &mut Session, flat_index: usize) -> DeleteOutcome {
+    let cands = candidates(s, FLAT_CANDIDATE_LIMIT);
+    let Some(cand) = cands.get(flat_index) else {
+        return DeleteOutcome::OutOfRange;
+    };
+    let key = match uncovered_remainder(s, cand) {
+        // Span candidates learn (and thus delete) under their span key.
+        Some(_) => cand.pinyin.clone(),
+        None => match normalized_key(&decode_input(s)) {
+            Some(k) => k,
+            None => return DeleteOutcome::NotUserWord,
+        },
+    };
+    if user_dict::forget(&mut s.user_dict, &key, &cand.text) {
+        DeleteOutcome::Deleted
+    } else {
+        DeleteOutcome::NotUserWord
     }
 }
 

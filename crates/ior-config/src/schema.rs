@@ -82,6 +82,7 @@ fn parse_engine(value: &Value, warnings: &mut Vec<String>) -> Result<Engine, Str
                 )?
             }
             "chinese_punct" => engine.chinese_punct = expect_bool(value, "engine.chinese_punct")?,
+            "full_width" => engine.full_width = expect_bool(value, "engine.full_width")?,
             "user_learning" => engine.user_learning = expect_bool(value, "engine.user_learning")?,
             "page_size" => engine.page_size = expect_count(value, "engine.page_size")?,
             "max_candidates" => {
@@ -438,6 +439,15 @@ mod tests {
         assert_eq!(
             from_table(&t).unwrap_err(),
             "engine.chinese_punct: expected a boolean, got integer"
+        );
+
+        let mut t = default_table();
+        t.get_table_mut("engine")
+            .unwrap()
+            .insert("full_width".into(), Value::Str("yes".into()));
+        assert_eq!(
+            from_table(&t).unwrap_err(),
+            "engine.full_width: expected a boolean, got string"
         );
 
         let mut t = default_table();

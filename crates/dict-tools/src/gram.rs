@@ -9,7 +9,7 @@
 //! itself, so counts are **within-word** character n-grams weighted by word
 //! frequency (an entry `jin'tian<TAB>今天<TAB>4500` adds 4500 to the
 //! unigrams 今/天 and the bigram 今天). Corpus-level models are future
-//! data (see the P2 row of `docs/ROADMAP-RIME-PARITY.md`).
+//! data.
 //!
 //! dict-tools deliberately does not depend on engine-core; the constants
 //! below mirror `engine-core::lm` and the interlock test fails if either

@@ -1,43 +1,41 @@
 # data 目录说明
 
-本目录存放 ior 输入法的词库源文件与格式文档。二进制产物（`.ior` / `.gram`）
-不入库（见根目录 `.gitignore`），由 `dict-tools` 从词表构建。
+本目录存放 ior 输入法的数据文件与格式文档。除 `data/dicts/core.ior` /
+`core.gram` 预编译主词库**入库**外，其余 `.ior` / `.gram` 构建产物不入库
+（见根目录 `.gitignore`），由 `dict-tools` 从词表构建。
 
 ## 目录结构
 
 ```
 data/
 ├── dicts/
-│   ├── sample-extra.tsv         # IT 领域示例词库（20 条，M0 冒烟测试用）
-│   ├── luna_pinyin.dict.yaml    # rime 明月拼音原词库（P0 数据导入）
-│   └── essay.txt                # rime preset vocabulary（短语权重）
+│   ├── core.ior                 # 预编译主词库（入库，addon 直接加载）
+│   ├── core.gram                # 预编译字符 n-gram 模型（入库）
+│   └── sample-extra.tsv         # IT 领域示例词库（20 条，M0 冒烟测试用）
 ├── opencc/                      # OpenCC ver.1.4.2 t2s 表（Apache-2.0）
 │   ├── TSCharacters.txt
 │   ├── TSPhrases.txt
 │   ├── LICENSE
 │   └── README.md
 ├── double-pinyin/
-│   ├── rime/                    # 上游 schema 原文（含 algebra 键位规则）
-│   │   ├── natural.schema.yaml  # 自然碼
-│   │   ├── flypy.schema.yaml    # 小鶴
-│   │   └── mspy.schema.yaml     # 微軟
-│   ├── natural.tsv              # 转出的 ior 键位表（引擎加载格式）
+│   ├── natural.tsv              # ior 双拼键位表（引擎加载格式）
 │   ├── flypy.tsv
 │   └── mspy.tsv
 └── README.md                    # 本文件
 ```
 
-`data/dicts/core.ior`（luna + essay 编译并转简体，约 9.4 MB / 293,168 keys /
-427,661 简体词条）**不入库**，由
-`cargo run -p dict-tools --release -- compile --simplify data/dicts/luna_pinyin.dict.yaml data/dicts/core.ior`
-生成（`compile` 会按 dict 头部的 `use_preset_vocabulary: true` 自动读取同目录
-`essay.txt`，`--simplify` 再用 `data/opencc/` 的 t2s 表转换后归一化去重）；
-安装用 `scripts/install-core-dict.sh`，该脚本默认带 `--simplify`。内置的
-`crates/engine-core/assets/core.tsv`（~90 条）仅作为测试/无数据时的兜底。
+`data/dicts/core.ior`（约 9.4 MB / 293,168 keys / 427,661 简体词条）与
+`data/dicts/core.gram`（约 5.9 MB）是**入库的预编译产物**，addon 直接加载，
+安装用 `scripts/install-core-dict.sh`（仅复制，不再现场编译）。二者最初由
+rime `luna_pinyin` 词库 + `essay` preset vocabulary 经
+`compile --simplify`（OpenCC t2s 转简体并归一化去重）编译而来，上游源文件
+已移出仓库（出处/许可见下文来源表）；要重建等价词库，自行获取上游词库后
+运行 `cargo run -p dict-tools --release -- compile --simplify <dict.yaml> <out.ior>`。
+内置的 `crates/engine-core/assets/core.tsv`（~90 条）仅作为测试/无数据时的兜底。
 
-`data/dicts/core.gram`（可选语言模型，约 6.0 MB）同样**不入库**：安装脚本把
-刚编译的 `core.ior` 导出为临时 TSV 后调用 `dict-tools train`，确保 preset 短语
-也进入字符 n-gram，再与词典一起安装。当前全量训练为 38,176 unigram /
+`data/dicts/core.gram`（可选语言模型，约 6.0 MB）与 `core.ior` 一同**入库**：
+由 `core.ior` 导出 TSV 后经 `dict-tools train` 离线训练（确保 preset 短语也进入
+字符 n-gram）。当前全量训练为 38,176 unigram /
 276,582 bigram / 297,084 trigram，文件 6,235,618 字节；raw 总权重
 74,911,345,415 超过 `u32`，writer 按统一除数缩放后头值 4,161,752,842
 （格式见 `engine-core/src/lm.rs`）。
@@ -63,26 +61,27 @@ Apache-2.0 许可证，供 `dict-tools compile --simplify` 在**构建期**使�
 
 ## 双拼键位表（P1 数据导入落地）
 
-三套真实双拼键位表由 `scripts/convert-rime-double-pinyin.py` 从上游
-schema 的 `algebra` 规则**求值**得到，不靠记忆编造：脚本对
+三套真实双拼键位表（`natural.tsv` / `flypy.tsv` / `mspy.tsv`）由上游
+schema 的 `algebra` 规则**求值**得到，不靠记忆编造：对
 `crates/engine-core/src/syllable.rs` 的 425 音节逐个套用 rime 规则
 （erase/derive/xform/xlit），再反演出 `final<TAB>key`、`zh|ch|sh<TAB>key`
-与 `0syllable<TAB>key` 三种行。转换零 final 冲突；两处不可避免的缺口由
-脚本跳过并写入表头：小鶴无法用两键表达 `lvan`，微軟无法表达 `eh`。
+与 `0syllable<TAB>key` 三种行。转换零 final 冲突；两处不可避免的缺口
+写入表头：小鶴无法用两键表达 `lvan`，微軟无法表达 `eh`。
 engine-core 的单测再把三张表逐音节回环校验：除上述缺口外每个音节都有码，
 `lue`/`lve`（同一 ü 韵母的别名）、`luo`/`lo` 与自然碼/微軟的
 `lvan`/`luan`（同码异音）属方案固有碰撞，显式登记。
 
 - 上游：<https://github.com/rime/rime-double-pinyin>（GPL-3.0）。
   键位映射属于功能性事实数据，本仓库保留出处与许可证说明。
-- 重新生成：`python3 scripts/convert-rime-double-pinyin.py`（幂等）。
+- 上游 schema 原文与一次性转换脚本已移出仓库；表头保留上游出处，
+  请勿手改三张 `.tsv`。
 
-## preset vocabulary（essay.txt）
+## preset vocabulary（编译期，可选）
 
-luna_pinyin 的 dict.yaml 只收录字词，常用多字短语依赖 Rime 部署期的
-preset vocabulary：`use_preset_vocabulary: true`（或显式 `vocabulary: essay`）
-时，`compile` 读取输入同级目录的 `essay.txt`，用 dict 中每个字的读音给短语
-编码。编码规则对齐 librime：
+rime 系 dict.yaml 只收录字词，常用多字短语依赖 Rime 部署期的 preset
+vocabulary：`use_preset_vocabulary: true`（或显式 `vocabulary: essay`）时，
+`compile` 读取输入同级目录的 `essay.txt`（不入库，可从 rime-essay 上游
+获取），用 dict 中每个字的读音给短语编码。编码规则对齐 librime：
 
 - 只使用占该字总权重 ≥5% 的读音；
 - 最长匹配 DFS，每短语最多 32 个码组合、最长 32 字；
@@ -91,8 +90,8 @@ preset vocabulary：`use_preset_vocabulary: true`（或显式 `vocabulary: essay
 - 启用 preset 后所有 rime 权重以 `WEIGHT_SCALE=100` 定点化；百分比行按
   `essay_weight * pct / 100` 缩放。
 
-因此 `.ior` 里除了源 dict.yaml 的 70,055 条，还会多出约 37 万条 essay
-编码短语。`essay.txt` 正文来自 rime-essay master，保留 3 行来源/许可头。
+入库的 `core.ior` 即包含源 dict 的 70,055 条外加约 37 万条 essay 编码
+短语（编译期一次性并入）。
 
 ## TSV 词库格式
 
@@ -205,13 +204,12 @@ engine-core、不内嵌 425 音节表，需人工比对）。
 # license: LGPL-3.0 (词库数据部分以各自上游许可为准)
 # imported: cargo run -p dict-tools -- compile luna_pinyin.dict.yaml data/dicts/core.ior
 
-已导入的源文件（原样保留上游头部注释，含出处/许可）：
+在库文件及其上游来源（含出处/许可；rime 上游原文已移出仓库，下列为其
+衍生数据）：
 
 | 文件 | 上游 | 规模 | 许可证 |
 |------|------|------|--------|
-| `dicts/luna_pinyin.dict.yaml` | rime-luna-pinyin | 70,055 词条（19,920 键） | LGPL-3.0 |
-| `dicts/essay.txt` | rime-essay | 442,685 短语（5,887,490 B） | LGPL-3.0 |
-| `double-pinyin/rime/*.schema.yaml` | rime-double-pinyin | 三套 schema | GPL-3.0 |
+| `dicts/core.ior` / `dicts/core.gram` | rime-luna-pinyin + rime-essay（编译产物） | 427,661 简体词条 | LGPL-3.0（衍生数据） |
 | `opencc/TSCharacters.txt` | OpenCC ver.1.4.2 | 单字表 104,516 B | Apache-2.0 |
 | `opencc/TSPhrases.txt` | OpenCC ver.1.4.2 | 短语表 8,786 B | Apache-2.0 |
 ```

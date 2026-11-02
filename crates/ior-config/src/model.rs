@@ -181,6 +181,8 @@ pub struct Engine {
     pub double_pinyin: DoublePinyin,
     /// Chinese punctuation mapping enabled.
     pub chinese_punct: bool,
+    /// Full-width (全角) input on/off (half-width by default).
+    pub full_width: bool,
     /// Commits feed the user dictionary.
     pub user_learning: bool,
     /// Candidate page size.
@@ -202,10 +204,11 @@ impl Default for Engine {
             shift_action: ShiftAction::default(),
             enter_action: EnterAction::default(),
             double_pinyin: DoublePinyin::default(),
-            chinese_punct: true,
+            chinese_punct: false,
+            full_width: false,
             user_learning: true,
             page_size: 5,
-            max_candidates: 10,
+            max_candidates: 50,
             prev_page_keys: vec!["Page_Up".into(), "minus".into()],
             next_page_keys: vec!["Page_Down".into(), "equal".into()],
             fuzzy: Fuzzy::default(),
@@ -512,9 +515,9 @@ mod tests {
     fn defaults_mirror_engine_core() {
         let c = Config::default();
         assert_eq!(c.engine.page_size, 5);
-        assert_eq!(c.engine.max_candidates, 10);
+        assert_eq!(c.engine.max_candidates, 50);
         assert!(c.engine.user_learning);
-        assert!(c.engine.chinese_punct);
+        assert!(!c.engine.chinese_punct); // half-width symbols by default
         assert_eq!(c.engine.shift_action, ShiftAction::Commit);
         assert_eq!(c.engine.double_pinyin, DoublePinyin::Off);
         assert_eq!(c.engine.prev_page_keys, ["Page_Up", "minus"]);

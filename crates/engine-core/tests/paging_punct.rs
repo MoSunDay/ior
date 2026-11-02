@@ -15,6 +15,12 @@ const MA_TSV: &str = "ma\t一\t1\nma\t二\t2\nma\t三\t3\nma\t四\t4\nma\t五\t5
 const MA_WORDS: [&str; 10] = ["十", "九", "八", "七", "六", "五", "四", "三", "二", "一"];
 
 /// Session over the ten-entry dictionary, preedit set to `raw`.
+fn chinese_punct_config() -> EngineConfig {
+    let mut cfg = default_config();
+    cfg.chinese_punct = true;
+    cfg
+}
+
 fn ma_session(raw: &str, config: EngineConfig) -> engine_core::session::Session {
     let dict = Dictionary::from_tsv(MA_TSV).expect("inline tsv");
     let mut s = new_session_with(config, dict);
@@ -173,7 +179,7 @@ fn ascii_mode_forwards_letters_and_punct() {
 
 #[test]
 fn punct_idle_commits_chinese_counterpart() {
-    let mut s = ma_session("", default_config());
+    let mut s = ma_session("", chinese_punct_config());
     assert_eq!(
         process_key(&mut s, ','),
         ProcessResult::Committed("，".to_string())
@@ -197,7 +203,7 @@ fn punct_idle_commits_chinese_counterpart() {
 
 #[test]
 fn punct_with_raw_commits_first_candidate_then_punct() {
-    let mut s = ma_session("ma", default_config());
+    let mut s = ma_session("ma", chinese_punct_config());
     assert_eq!(
         process_key(&mut s, ','),
         ProcessResult::Committed("十，".to_string())
@@ -215,7 +221,7 @@ fn punct_with_raw_commits_first_candidate_then_punct() {
 fn punct_without_candidates_commits_punct_only() {
     // "mh" cannot be segmented: no candidates, so only the punctuation is
     // committed and the dead preedit is dropped.
-    let mut s = ma_session("mh", default_config());
+    let mut s = ma_session("mh", chinese_punct_config());
     assert!(session::candidates(&s, 10).is_empty());
     assert_eq!(
         process_key(&mut s, '.'),
@@ -227,7 +233,7 @@ fn punct_without_candidates_commits_punct_only() {
 #[test]
 fn ascii_punct_override_and_config_switch_forward_punct() {
     // Per-session override: Chinese mode but ASCII punctuation.
-    let mut s = ma_session("", default_config());
+    let mut s = ma_session("", chinese_punct_config());
     toggle_ascii_punct(&mut s);
     assert!(s.ascii_punct);
     assert_eq!(process_key(&mut s, ','), ProcessResult::Forwarded);

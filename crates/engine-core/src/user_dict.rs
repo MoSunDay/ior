@@ -68,6 +68,28 @@ pub fn absorb(u: &mut UserDict, other: &UserDict) {
     }
 }
 
+/// Removes the learned `(pinyin, hanzi)` entry (the key is normalized
+/// first, exactly like [`learn`]). Returns whether an entry existed and
+/// was removed; a key left without entries disappears, and the frequency
+/// sort of survivors is untouched (removal preserves order). This is the
+/// delete-side counterpart of [`learn`]: the host calls it when the user
+/// removes a mis-learned word from the candidate window.
+pub fn forget(u: &mut UserDict, pinyin: &str, hanzi: &str) -> bool {
+    let key = normalize_pinyin(pinyin);
+    let Some(vals) = u.entries.get_mut(&key) else {
+        return false;
+    };
+    let before = vals.len();
+    vals.retain(|(h, _)| h != hanzi);
+    if vals.len() == before {
+        return false;
+    }
+    if vals.is_empty() {
+        u.entries.remove(&key);
+    }
+    true
+}
+
 /// Ages every frequency towards zero by whole halvings of the half-life:
 /// `halvings = elapsed_secs / half_life_secs` (capped at 31 shifts), each
 /// frequency is shifted right by that many bits, entries that reach zero
@@ -219,6 +241,27 @@ mod tests {
         learn(&mut v, "k", "一");
         decay(&mut v, 59, 60);
         assert_eq!(lookup(&v, "k"), vec![("一".to_string(), 1)]);
+    }
+
+    #[test]
+    fn forget_removes_only_the_named_entry_and_drops_empty_keys() {
+        let mut u = new();
+        learn(&mut u, "k", "五");
+        learn(&mut u, "k", "一");
+        learn(&mut u, "solo", "独");
+        // Normalization applies like on learn: spaces collapse to `'`.
+        assert!(forget(&mut u, " K ", "五"));
+        assert_eq!(lookup(&u, "k"), vec![("一".to_string(), 1)]);
+        assert_eq!(len(&u), 2);
+        // Unknown hanzi under a known key is a no-op.
+        assert!(!forget(&mut u, "k", "二"));
+        // Removing the last hanzi of a key drops the key.
+        assert!(forget(&mut u, "k", "一"));
+        assert!(lookup(&u, "k").is_empty());
+        assert_eq!(len(&u), 1);
+        // Forgetting twice reports the second call as a miss.
+        assert!(!forget(&mut u, "k", "一"));
+        assert_eq!(lookup(&u, "solo"), vec![("独".to_string(), 1)]);
     }
 
     #[test]

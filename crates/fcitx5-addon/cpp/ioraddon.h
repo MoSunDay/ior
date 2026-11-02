@@ -30,11 +30,15 @@
 //  - ascii_mode/set_ascii_mode report/force Chinese(0)/English(1); a mode
 //    change runs the core Shift transition (pending preedit handled per
 //    shift_action). NOTE: process_key ALSO toggles the mode on a Shift
-//    press keysym; this shell uses the release-side path below and never
-//    forwards Shift keys to process_key (pick ONE mechanism).
+//    press keysym; this shell consumes Shift press AND release itself
+//    (release-side toggle) and never forwards Shift to process_key
+//    (pick ONE mechanism).
 //  - Returned strings are UTF-8, NUL-terminated, never nullptr, and valid
 //    only until the next ior_* call on the same engine. Never free them;
 //    copy into std::string if the text must survive.
+//  - candidate_delete removes the learned entry behind a page-local
+//    candidate (delete-on-click); the composition stays intact and the
+//    host saves the userdb itself. Dictionary-only hits return 1.
 //  - userdb_save/load/decay persist and age the learned dictionary.
 //    save = 0 ok / 2 IO / -1 null(engine|path); load = 0 ok / 1 file
 //    missing (non-fatal, engine keeps its state) / 2 IO / 3 format /
@@ -60,8 +64,19 @@ uint32_t ior_engine_page_info(const IorEngineC* engine);
 // -1 prev / 1 next / 0 not a page key (config: [engine] prev/next_page_keys)
 int32_t ior_engine_page_key_direction(const IorEngineC* engine, uint32_t keysym);
 const char* ior_engine_select(IorEngineC* engine, uint32_t page_local_index);
+// Delete-on-click counterpart of select: removes the learned entry
+// behind the page-local candidate, composition untouched. 0 deleted /
+// 1 not a learned word (dictionary hits are read-only) / 2 out of range
+// / -1 null. The host persists via userdb_save right after.
+int32_t ior_engine_candidate_delete(IorEngineC* engine, uint32_t page_local_index);
 uint32_t ior_engine_ascii_mode(const IorEngineC* engine);
 uint32_t ior_engine_set_ascii_mode(IorEngineC* engine, uint32_t enable);
+// Full-width (全角) mode: 0 half (default) / 1 full. Setting it never
+// touches a pending preedit; in full mode idle ASCII keys commit
+// full-width forms (Chinese mode: digits/space/uppercase, English mode:
+// everything printable).
+uint32_t ior_engine_full_width(const IorEngineC* engine);
+uint32_t ior_engine_set_full_width(IorEngineC* engine, uint32_t enable);
 int32_t ior_engine_userdb_save(IorEngineC* engine, const char* path);
 int32_t ior_engine_userdb_load(IorEngineC* engine, const char* path);
 int32_t ior_engine_userdb_decay(IorEngineC* engine, uint32_t elapsed_secs,
@@ -85,6 +100,10 @@ const char* ior_engine_voice_take_text(IorEngineC* engine);
 uint32_t ior_engine_abi_version(void);
 } // extern "C"
 
+#include <fcitx/action.h>
+namespace fcitx {
+class Instance;
+} // namespace fcitx
 #include <fcitx/addonfactory.h>
 #include <fcitx/candidatelist.h>
 #include <fcitx/inputmethodengine.h>
@@ -103,15 +122,22 @@ class EventSourceTime;
 // simplification; per-IC state lands in M1 (see docs/M0-FRONTEND-TEST.md).
 class IorEngine final : public fcitx::InputMethodEngine {
 public:
-    // eventLoop drives the 50ms voice-poll timer (may be null in tests:
-    // voice results then arrive only on the next key event).
-    explicit IorEngine(fcitx::EventLoop* eventLoop = nullptr);
+    // instance registers the status-area action (tray / candidate
+    // window); eventLoop drives the 50ms voice-poll timer (either may be
+    // null in tests: the action is skipped and voice results then arrive
+    // only on the next key event).
+    explicit IorEngine(fcitx::Instance* instance = nullptr,
+                       fcitx::EventLoop* eventLoop = nullptr);
     ~IorEngine() override;
 
     void keyEvent(const fcitx::InputMethodEntry& entry,
                   fcitx::KeyEvent& keyEvent) override;
     void reset(const fcitx::InputMethodEntry& entry,
                fcitx::InputContextEvent& event) override;
+    // Re-adds the width toggle to the input context's status area (the
+    // area is cleared before every activate).
+    void activate(const fcitx::InputMethodEntry& /*entry*/,
+                  fcitx::InputContextEvent& event) override;
 
     // Refreshes preedit + candidate list from the engine state. Public so
     // candidate words can refresh the panel after a mouse selection.
@@ -122,9 +148,20 @@ public:
     // the keyboard commit paths. Failures are silent.
     void saveUserdb();
 
+    // Delete-learned-word mode (public for IorCandidateWord): while on,
+    // a candidate click deletes the learned entry instead of committing.
+    bool inDeleteMode() const { return deleteMode_; }
+    // Leaves delete mode without side effects (panel keeps composing).
+    void exitDeleteMode() { deleteMode_ = false; }
+
     // Drains the voice worker and commits a finished transcript to the
     // last input context (called by the poll timer and after hotkeys).
     void pollVoice();
+
+    // Brief panel hint after a mode toggle ("Chinese"/"English" on
+    // Shift, "Full-width"/"Half-width" on the status-area action);
+    // a one-shot timer clears it (replacing a pending one).
+    void showHint(fcitx::InputContext& ic, const std::string& text);
 
 private:
     IorEngineC* raw_;
@@ -132,17 +169,45 @@ private:
     // configured [voice] hotkey (default ctrl+grave). Returns true when
     // the event was consumed.
     bool handleVoiceHotkey(fcitx::InputContext* ic, fcitx::KeyEvent& keyEvent);
+    // Status-area callback: flips the engine's full-width flag and
+    // refreshes the action's check state + panel hint.
+    void toggleWidth(fcitx::InputContext* ic);
+    // Status-area callback: enters the one-shot delete-learned-word
+    // mode (a second click while it is on cancels it).
+    void toggleDeleteMode(fcitx::InputContext* ic);
     // Where a finished voice transcript is committed. Like the shared
     // engine itself, one IC is an accepted simplification (M0).
     fcitx::InputContext* lastIc_ = nullptr;
     // 50ms timer polling ior_engine_voice_poll so transcripts land even
     // without further key events.
     std::unique_ptr<fcitx::EventSourceTime> voicePollEvent_;
+    // The fcitx5 event loop (null in tests): drives the voice poll and
+    // the mode-hint timers.
+    fcitx::EventLoop* eventLoop_ = nullptr;
+    // The fcitx5 instance (null in tests): owns the action registry the
+    // width toggle registers into.
+    fcitx::Instance* instance_ = nullptr;
+    // One-shot removal of the mode hint (assigning a fresh timer
+    // cancels a pending one).
+    std::unique_ptr<fcitx::EventSourceTime> modeHintEvent_;
+    // Full-width toggle shown in the status area (tray icon menu and the
+    // candidate window's right edge); null when instance_ is null.
+    std::unique_ptr<fcitx::SimpleAction> widthAction_;
+    // One-shot "delete learned word" mode, entered from the status-area
+    // action (candidate window's right edge): the next candidate click
+    // deletes the learned entry instead of committing. Exits on that
+    // click, on any key press (Esc is consumed, others fall through) or
+    // on reset. Hover highlighting is the UI's own; only clicks reach
+    // the engine.
+    bool deleteMode_ = false;
+    std::unique_ptr<fcitx::SimpleAction> deleteAction_;
     // Shift-as-toggle tracking: a Shift press only flips the mode if no
     // other key was pressed while it was held (i.e. it was not used as a
     // modifier). The toggle itself runs on Shift RELEASE through
-    // ior_engine_set_ascii_mode, so Shift presses are never forwarded to
-    // ior_engine_process_key (which would toggle a second time).
+    // ior_engine_set_ascii_mode. Both Shift press and release events are
+    // consumed by this shell — never forwarded to ior_engine_process_key
+    // (which would toggle a second time), and never left for fcitx5's
+    // global AltTriggerKeys (Shift_L by default) to steal.
     bool shiftDown_ = false;
     bool shiftUsed_ = false;
 };
