@@ -59,3 +59,15 @@ P0/P5-lite/P3 批次（含 ABI v2 18 符号、四路 userdb 落盘）真机回�
 
 结论：删除自造词引擎语义、C ABI 与真机选词持久化实证通过；托盘
 `Del word` 菜单点击→点词删除留一条人工复核。
+
+## Shift 防误上屏修复（b6b407d）回归：2026-11-02
+
+| 步骤 | 命令/操作 | 期望 | 结果 |
+|---|---|---|---|
+| engine 默认（四层） | `cargo test --workspace` | engine_state/ffi/paging_punct/model 断言默认丢弃、点选后切换无残留 | ✅ 371 passed |
+| 已安装库 ABI 探针 | `g++ /tmp/shift_probe.cc -L/usr/lib/x86_64-linux-gnu/fcitx5 -lior`：`process_key("nih")×3 → set_ascii_mode(切换) → take_commit`（即 C++ Shift 释放路径的精确序列） | 新库返回 `[]`（旧库返回 `nih`） | ✅ committed=[]（build/ 与已安装副本双验一致） |
+| 真机 GUI 自动化 | zenity/tkinter 探针 | 字段仅含后续 ASCII | ⚠️ 未采信：同屏并发会话亦在跑 GUI 验证（焦点互抢、按应用 IM 记忆漂移到 rime），键入分流到对方窗口，空字段为假阴性 |
+
+结论：修复在引擎语义、ABI 契约与已安装产物三层实证通过；GUI 端到端
+一步因共享 X 会话焦点争用无法自动化，留人工复核：桌面空闲时输入半截
+拼音→按 Shift，预期**无任何上屏**、仅模式切换（提示 English）。
