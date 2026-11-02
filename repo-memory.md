@@ -33,7 +33,7 @@
 ## 构建与测试
 - `cargo build --workspace` / `cargo test --workspace`（与 CI 同款；提交前另跑 fmt/clippy/行数脚本）。
 - 基准：`cargo run -p ior-bench --release`（参考性不阻断；P0 基线：10 万词编译 <1s、查询 <10µs）。
-- 词库：`cargo run -p dict-tools -- <cmd>`；退出码 0 成功/1 用法/2 IO/3 格式；全量安装 `scripts/install-core-dict.sh`（`--simplify` 编译期转简体）。
+- 词库：`cargo run -p dict-tools -- <cmd>`；退出码 0 成功/1 用法/2 IO/3 格式；全量安装 `scripts/install-core-dict.sh`（纯安装入库的预编译 core.ior/core.gram，不再现场编译）。
 - addon 真机：`crates/fcitx5-addon/cpp` 下 `cmake -S . -B build -G Ninja && cmake --build build`（CMake 自动驱动 `cargo build -p fcitx5-ior`）；切换需 profile 组内含 ior（README「fcitx5 addon 构建说明」）。
 - 语音部署：`scripts/deploy-asr-node02.sh`（node02：ASR 8000 / LLM 8001，docs/NODE02-DEPLOY.md）。
 
