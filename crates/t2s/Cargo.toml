@@ -1,0 +1,8 @@
+[package]
+name = "t2s"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Traditional -> simplified hanzi conversion on vendored OpenCC tables (pure, zero deps)"
+
+[dependencies]

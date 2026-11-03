@@ -5,6 +5,9 @@ version = 4
 [[package]]
 name = "dict-tools"
 version = "0.1.0"
+dependencies = [
+ "t2s",
+]
 
 [[package]]
 name = "engine-core"
@@ -17,6 +20,7 @@ dependencies = [
  "engine-core",
  "ior-config",
  "llm",
+ "t2s",
  "voice",
 ]
 
@@ -34,6 +38,10 @@ version = "0.1.0"
 
 [[package]]
 name = "llm"
+version = "0.1.0"
+
+[[package]]
+name = "t2s"
 version = "0.1.0"
 
 [[package]]

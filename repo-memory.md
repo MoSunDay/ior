@@ -1,4 +1,4 @@
-最后验证：2026-11-02 ·（基线：d32ce87 @ main，378 tests；组件状态按已提交状态记录）
+最后验证：2026-11-03 ·（语音对接批次：t2s crate + node02 vllm[audio] 修复；380 tests）
 
 # ior 仓库记忆
 
@@ -7,7 +7,7 @@
 - 一期：词库、整句解码、自学习、双拼、模糊音；二期 V1 远端先行：node02 Qwen3-ASR 语音 + 可选 LLM 润色。
 - 非目标（当前）：本地 onnx/GGUF 模型（V2+，scripts/download_models.sh 注释）；搜狗 `.scel`/`.ssf` 词库分发（版权禁用，data/README.md）。
 
-## 组件地图（crates/，7 个 workspace 成员，见 Cargo.toml）
+## 组件地图（crates/，8 个 workspace 成员，见 Cargo.toml）
 | crate | 职责 | 关键源 |
 |-------|------|--------|
 | engine-core | 纯 Rust 引擎：拼音切分 / 词库 / 词级+整句 beam 解码 / 用户自学习 | src/{segmenter,decoder,beam_search,session,user_dict,punct,width}.rs |
@@ -15,6 +15,7 @@
 | ior-config | 零依赖 TOML 子集解析 + schema/default/patch | src/{parser,schema,model,patch}.rs |
 | fcitx5-addon | C ABI 桥（staticlib+cdylib）+ C++ 薄壳接入 fcitx5 | src/ffi*.rs（4 个）、src/{engine_state,voice_*}.rs、cpp/ioraddon.cpp |
 | voice | 语音 V1：热键 / pw-record 采集 / WAV / 零依赖 http·multipart·json / OpenAI 兼容 ASR 客户端 | src/{asr,capture,hotkey,http,json}.rs |
+| t2s | 繁→简汉字转换（vendored OpenCC 表，dict-tools 与 fcitx5-addon 语音路径共享） | src/lib.rs |
 | llm | 润色 V1（node02 chat 远端），薄封装 | src/lib.rs |
 | bench | 自研计时基准：编译/加载/查询/整句解码 | src/main.rs |
 

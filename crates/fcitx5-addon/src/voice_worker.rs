@@ -34,6 +34,9 @@ pub fn run(settings: &VoiceSettings, signals: &WorkerSignals) -> Result<String, 
     let pcm = capture::strip_wav_header(&stream)?;
     let wav = capture::wav_bytes(pcm, settings.sample_rate);
     let transcript = asr::transcribe(&settings.asr, &wav)?;
+    // ASR models frequently answer `language=zh` in traditional script
+    // (whisper-small does); commit simplified like the rest of the IME.
+    let transcript = simplify_transcript(&transcript);
     match &settings.polish {
         None => Ok(transcript),
         Some(polish) => Ok(
@@ -42,6 +45,18 @@ pub fn run(settings: &VoiceSettings, signals: &WorkerSignals) -> Result<String, 
                 transcript
             }),
         ),
+    }
+}
+
+/// Normalizes a transcript to simplified hanzi through the vendored
+/// OpenCC tables. Malformed vendored data (impossible in practice) falls
+/// back to the raw transcript.
+fn simplify_transcript(transcript: &str) -> String {
+    use std::sync::OnceLock;
+    static TABLES: OnceLock<Option<t2s::Simplifier>> = OnceLock::new();
+    match TABLES.get_or_init(|| t2s::bundled().ok()) {
+        Some(s) => t2s::simplify_text(s, transcript),
+        None => transcript.to_string(),
     }
 }
 
@@ -99,6 +114,17 @@ mod tests {
 
     fn fresh_signals() -> WorkerSignals {
         WorkerSignals::new()
+    }
+
+    #[test]
+    fn transcripts_normalize_to_simplified_hanzi() {
+        // whisper-small answered `language=zh` in traditional script.
+        assert_eq!(
+            simplify_transcript("今天天氣很好,我們一起去公園三步吧!"),
+            "今天天气很好,我们一起去公园三步吧!"
+        );
+        // Simplified input and ASCII are unchanged.
+        assert_eq!(simplify_transcript("nihao 世界 ok"), "nihao 世界 ok");
     }
 
     #[test]

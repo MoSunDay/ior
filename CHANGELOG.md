@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+### Added
+- 语音转写简体化：新增零依赖 `t2s` crate（OpenCC t2s 表自 `dict-tools`
+  提炼共享），`voice_worker` 在转写后统一转简体再上屏/润色——修复
+  whisper-small `language=zh` 输出繁体问题。dict-tools 改薄 re-export，
+  `compile --simplify` 行为不变。
+
+### Fixed
+- `deploy-asr-node02.sh` 改装 `vllm[audio]>=0.11`：此前缺 audio extra
+  （soundfile ImportError）导致 node02 转写空响应且单序列阻塞。
+
 ### feat(engine)：组句暂存——span 选字不再逐字上屏，选完整段才整词输出并学习（造词闭环）
 
 - **行为变化**：翻页选中只覆盖部分拼音的候选（如 `panjie` 选「盼」），

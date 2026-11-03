@@ -16,3 +16,4 @@ engine-core = { path = "../engine-core" }
 ior-config = { path = "../ior-config" }
 llm = { path = "../llm" }
 voice = { path = "../voice" }
+t2s = { path = "../t2s" }

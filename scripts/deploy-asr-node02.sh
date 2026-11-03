@@ -101,7 +101,7 @@ ENT
 PIP_FLAGS=""
 [ -n "$PIP_INDEX" ] && PIP_FLAGS="--index-url $PIP_INDEX"
 # modelscope SDK 是 VLLM_USE_MODELSCOPE 下载路径的运行时依赖（vllm 不自带）。
-run "sudo -H -u vllm python3 -m pip install --user 'vllm>=0.11' modelscope $PIP_FLAGS &&
+run "sudo -H -u vllm python3 -m pip install --user 'vllm[audio]>=0.11' modelscope $PIP_FLAGS &&
   sudo -H -u vllm /home/vllm/.local/bin/vllm --version 2>/dev/null | head -1"
 
 # 3) 模型预下载到本地目录。vllm 启动时的在线存在性检查会直连

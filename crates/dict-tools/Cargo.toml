@@ -14,3 +14,4 @@ name = "dict-tools"
 path = "src/main.rs"
 
 [dependencies]
+t2s = { path = "../t2s" }

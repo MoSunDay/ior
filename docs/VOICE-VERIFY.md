@@ -128,3 +128,26 @@ node02 端点）：
 - `/usr/lib/.../libior.so` 已更新为含 JSON 信封解析的构建
   （md5 `2c599d2a`），但**运行中的 fcitx5 仍映射旧版**，下次自然重启
   生效；验证清单执行时一并 `fcitx5 --replace`。
+
+## 五、2026-11-03 对接收尾（t2s + node02 修复，headless 全证）
+
+- **node02 修复**：`ior-asr.service`（whisper-small）此前缺 `vllm[audio]`
+  extra——`soundfile` ImportError 导致转写空响应且单序列阻塞（`--max-num-seqs 1`
+  下事件循环被占满，连 `/v1/models` 都挂起）。已补装 `soundfile`+`librosa`
+  并重启；`deploy-asr-node02.sh` 同步改为 `vllm[audio]>=0.11` 根治。
+- **音源结论**：延迟与幻觉都由音源质量决定——espeak 机器音 8.9s 且幻觉
+  （字幕署名）；piper 神经中文语音（huayan-medium，重采样 16k mono s16）
+  转写 12/14 字正确、延迟 0.6s（"散步"→"三步"近音，whisper-small 上限）。
+- **whisper-small 繁体输出**：`language=zh` 仍出繁体（`天氣/我們/公園`）。
+  新增 `crates/t2s`（dict-tools 的 OpenCC t2s 提炼为共享 crate）接入
+  `voice_worker`：转写文本先简体化再上屏/润色。dict-tools 改薄 re-export。
+- **宿主直驱复测（已安装 libior.so，真实 node02 端点）**：
+  hotkey 0x60/4；toggle→recording(1)→stop→transcribing(2)→**poll 门控**
+  →idle(0)；`take_text` = `今天天气很好,我们一起去公园三步吧!`（简体），
+  toggle-toggle 第二轮一致。注意探针必须循环调 `voice_poll`，只读
+  state 不会迁移（C++ 每 50ms 轮询即此语义）。
+- **配置**：`timeout_ms` 8000→30000（幻觉长生成的保护余量）；
+  `capture_command` 恢复 `auto`（pw-record 在位）。
+- **第三节 GUI 清单**：仍未执行——本日 4 次尝试均被实时桌面使用打断
+  （用户键入侵入 zenity、fcitx5 被外部重启、窗口即时关闭）。链路已由
+  上条宿主直驱全证，GUI 仅剩 C++ keyEvent 拦截一跳，待用户时间窗。
