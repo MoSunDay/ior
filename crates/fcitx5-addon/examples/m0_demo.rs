@@ -95,8 +95,9 @@ fn main() {
         text(unsafe { ior_engine_select(engine, 0) })
     );
 
-    // ABI v2: Shift switches to English mode; the pending preedit (none
-    // here) is handled per shift_action, letters are then forwarded.
+    // ABI v2: Shift switches to English mode; a pending preedit (none
+    // here) would be committed exactly like Enter, letters are then
+    // forwarded.
     // SAFETY: engine is live for the whole demo.
     unsafe {
         assert_eq!(ior_engine_process_key(engine, 0xFFE1), 1); // Shift_L

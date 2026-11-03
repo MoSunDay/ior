@@ -241,11 +241,6 @@ fn read_user_config(path: &Path) -> Option<user_config::Config> {
 
 /// Maps the user-facing config model onto engine-core's runtime config.
 fn to_engine_config(cfg: &user_config::Config) -> EngineConfig {
-    let shift_action = match cfg.engine.shift_action {
-        user_config::ShiftAction::Commit => core_config::ShiftAction::CommitRaw,
-        user_config::ShiftAction::Temp => core_config::ShiftAction::CommitBest,
-        user_config::ShiftAction::Drop => core_config::ShiftAction::Clear,
-    };
     let enter_action = match cfg.engine.enter_action {
         user_config::EnterAction::Raw => core_config::EnterAction::CommitRaw,
         user_config::EnterAction::Candidate => core_config::EnterAction::CommitBest,
@@ -277,7 +272,6 @@ fn to_engine_config(cfg: &user_config::Config) -> EngineConfig {
         max_candidates: cfg.engine.max_candidates,
         chinese_punct: cfg.engine.chinese_punct,
         full_width: cfg.engine.full_width,
-        shift_action,
         enter_action,
     }
 }
@@ -296,7 +290,7 @@ pub fn process_key(engine: &mut IorEngine, ch: char) -> i32 {
 }
 
 /// Runs the core Shift transition (Chinese <-> English mode switch,
-/// applying `shift_action` to a pending preedit) and refreshes buffers.
+/// committing a pending preedit exactly like Enter) and refreshes buffers.
 pub fn process_shift(engine: &mut IorEngine) -> i32 {
     let result = session::process_shift(&mut engine.session);
     apply_result(engine, result)
@@ -380,9 +374,9 @@ pub fn ascii_mode(engine: &IorEngine) -> bool {
 }
 
 /// Forces the Chinese/English mode. Changing the mode routes through the
-/// core Shift transition, so a pending preedit is committed/cleared per
-/// `shift_action` (the commit text lands in the pending-commit buffer).
-/// Returns the (new) mode.
+/// core Shift transition, so a pending preedit is committed exactly like
+/// Enter (per `enter_action`; the commit text lands in the pending-commit
+/// buffer). Returns the (new) mode.
 pub fn set_ascii_mode(engine: &mut IorEngine, enable: bool) -> bool {
     if enable != engine.session.ascii_mode {
         process_shift(engine);
@@ -616,10 +610,10 @@ mod tests {
     #[test]
     fn ascii_mode_forwards_letters_and_clears_buffers() {
         let mut engine = ma_engine("ma");
-        // Default shift_action = drop: the pending "ma" is discarded, not
-        // committed (a lone Shift must never leak half-typed pinyin).
-        assert_eq!(process_shift(&mut engine), 1); // Clear("ma")
-        assert_eq!(engine.commit_buf.to_str(), Ok(""));
+        // The switch behaves like Enter: the pending "ma" is committed
+        // raw (default enter_action) instead of being dropped.
+        assert_eq!(process_shift(&mut engine), 2); // Committed("ma")
+        assert_eq!(engine.commit_buf.to_str(), Ok("ma"));
         assert!(ascii_mode(&engine));
         assert_eq!(engine.preedit_buf.to_str(), Ok(""));
         assert!(engine.candidates_buf.is_empty());
@@ -632,12 +626,12 @@ mod tests {
     }
 
     #[test]
-    fn set_ascii_mode_is_idempotent_and_drops_pending_raw() {
+    fn set_ascii_mode_is_idempotent_and_commits_pending_raw() {
         let mut engine = ma_engine("ma");
         assert!(set_ascii_mode(&mut engine, true));
-        // Drop default: the pending "ma" is discarded, nothing committed.
-        assert_eq!(engine.commit_buf.to_str(), Ok(""));
-        assert!(!take_commit(&mut engine));
+        // Enter-like switch: the pending "ma" is committed raw.
+        assert_eq!(engine.commit_buf.to_str(), Ok("ma"));
+        assert!(take_commit(&mut engine));
         // Re-setting the current mode is a no-op: no phantom commit.
         assert!(set_ascii_mode(&mut engine, true));
         assert!(!take_commit(&mut engine));
@@ -759,7 +753,7 @@ mod tests {
 
     #[test]
     fn user_toml_maps_onto_engine_config() {
-        let text = "[engine]\nshift_action = \"none\"\ndouble_pinyin = \"flypy\"\n\
+        let text = "[engine]\nenter_action = \"candidate\"\ndouble_pinyin = \"flypy\"\n\
                     page_size = 7\nmax_candidates = 12\nchinese_punct = false\n\
                     user_learning = false\n[engine.fuzzy]\nz_zh = true\nn_l = true\n";
         let loaded = user_config::apply(
@@ -768,7 +762,7 @@ mod tests {
         )
         .expect("apply");
         let cfg = to_engine_config(&loaded);
-        assert_eq!(cfg.shift_action, core_config::ShiftAction::Clear);
+        assert_eq!(cfg.enter_action, core_config::EnterAction::CommitBest);
         assert_eq!(cfg.double_pinyin, core_config::DoublePinyin::Xiaohe);
         assert_eq!(cfg.page_size, 7);
         assert_eq!(cfg.max_candidates, 12);

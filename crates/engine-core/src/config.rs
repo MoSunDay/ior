@@ -48,25 +48,6 @@ pub enum DoublePinyin {
     Custom,
 }
 
-/// What Shift does to the un-committed preedit when switching from Chinese
-/// to English mode (see `session::process_shift`). Three configurable
-/// states: commit the raw buffer verbatim, commit the best candidate (raw
-/// text when nothing decodes), or just drop the composition.
-///
-/// The default is `Clear`: a lone Shift must only switch the mode, never
-/// leak half-typed pinyin into the application (the raw letters stay
-/// reachable via `enter_action` when needed).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ShiftAction {
-    /// Commit the raw (typed) buffer as-is, apostrophes included.
-    CommitRaw,
-    /// Commit the top candidate (learning applies); raw text as fallback.
-    CommitBest,
-    /// Drop the composition without committing anything.
-    #[default]
-    Clear,
-}
-
 /// What Enter does to the un-committed preedit while a composition is
 /// active (see `session::process_key`). The common IME contract: Space
 /// commits the top Chinese candidate while Enter commits the typed
@@ -114,9 +95,6 @@ pub struct EngineConfig {
     /// printable ASCII (English mode) commit full-width forms. Default
     /// half-width; runtime-toggleable per session.
     pub full_width: bool,
-    /// How Shift leaving Chinese mode handles the un-committed preedit:
-    /// commit it raw, commit the best candidate, or clear it.
-    pub shift_action: ShiftAction,
     /// What Enter does to the un-committed preedit: commit the typed
     /// letters raw, or take the Space path and commit the top candidate.
     pub enter_action: EnterAction,
@@ -134,7 +112,6 @@ impl Default for EngineConfig {
             max_candidates: 50,
             chinese_punct: false,
             full_width: false,
-            shift_action: ShiftAction::Clear,
             enter_action: EnterAction::CommitRaw,
         }
     }

@@ -49,9 +49,7 @@ pub mod user_dict_store;
 pub mod width;
 
 pub use beam::{candidates as beam_candidates, BeamParams, MIN_BEAM_SYLLABLES};
-pub use config::{
-    default_config, normalize_syllable, DoublePinyin, EngineConfig, FuzzyConfig, ShiftAction,
-};
+pub use config::{default_config, normalize_syllable, DoublePinyin, EngineConfig, FuzzyConfig};
 pub use decoder::{
     candidates as decode_candidates, candidates_with as decode_candidates_with,
     candidates_with_lm as decode_candidates_with_lm, Candidate,

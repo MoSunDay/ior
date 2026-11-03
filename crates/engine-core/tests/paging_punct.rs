@@ -1,7 +1,7 @@
 //! P5-lite integration coverage: candidate paging, Shift mode switching and
 //! Chinese punctuation, all through the public `process_key`-level API.
 
-use engine_core::config::{default_config, EngineConfig, ShiftAction};
+use engine_core::config::{default_config, EngineConfig, EnterAction};
 use engine_core::dict::Dictionary;
 use engine_core::session::{
     self, current_page, new_session_with, next_page, page_count, prev_page, process_key,
@@ -117,11 +117,11 @@ fn select_flat_commits_and_learns() {
 }
 
 #[test]
-fn shift_commit_raw_sends_preedit_verbatim() {
-    let mut cfg = default_config();
-    assert_eq!(cfg.shift_action, ShiftAction::Clear); // leak-proof default
-    cfg.shift_action = ShiftAction::CommitRaw;
-    let mut s = ma_session("ni'hao", cfg);
+fn shift_to_english_commits_like_enter() {
+    // Default enter_action = CommitRaw: switching Chinese -> English with
+    // a pending composition behaves exactly like Enter — the typed
+    // letters go out verbatim, nothing is learned.
+    let mut s = ma_session("ni'hao", default_config());
     assert_eq!(
         process_shift(&mut s),
         ProcessResult::Committed("ni'hao".to_string())
@@ -135,9 +135,11 @@ fn shift_commit_raw_sends_preedit_verbatim() {
 }
 
 #[test]
-fn shift_commit_best_learns_top_candidate() {
+fn shift_with_enter_candidate_learns_top_candidate() {
+    // enter_action = "candidate": the switch takes the Space path and
+    // commits the top candidate (learning included).
     let mut cfg = default_config();
-    cfg.shift_action = ShiftAction::CommitBest;
+    cfg.enter_action = EnterAction::CommitBest;
     let mut s = ma_session("ma", cfg.clone());
     assert_eq!(
         process_shift(&mut s),
@@ -158,11 +160,9 @@ fn shift_commit_best_learns_top_candidate() {
 }
 
 #[test]
-fn shift_clear_drops_the_buffer() {
-    let mut cfg = default_config();
-    assert_eq!(cfg.shift_action, ShiftAction::Clear); // the default
-    cfg.shift_action = ShiftAction::Clear;
-    let mut s = ma_session("ma", cfg);
+fn shift_with_empty_buffer_stays_quiet() {
+    // Nothing pending: the toggle neither commits nor leaks anything.
+    let mut s = ma_session("", default_config());
     assert_eq!(process_shift(&mut s), ProcessResult::Editing);
     assert!(s.ascii_mode);
     assert!(s.raw.is_empty());

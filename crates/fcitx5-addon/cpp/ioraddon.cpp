@@ -383,12 +383,15 @@ void IorEngine::updateUI(fcitx::InputContext& ic) {
             return; // no candidates while the mic is open
         }
         // Delete mode rides along as an aux line so the click target is
-        // announced right above the candidates it will act on.
-        if (deleteMode_) {
-            panel.setAuxUp(fcitx::Text(
-                "Click a candidate to delete it from the user dictionary "
-                "(Esc exits)"));
-        }
+        // announced right above the candidates it will act on. Any other
+        // aux (a transient "Chinese"/"English" mode hint) is cleared
+        // here: a hint must not outlive the next refresh, or it reads
+        // like a prefix stuck above the composition.
+        panel.setAuxUp(deleteMode_
+                           ? fcitx::Text("Click a candidate to delete it "
+                                         "from the user dictionary "
+                                         "(Esc exits)")
+                           : fcitx::Text());
         // The panel preedit above keeps the raw pinyin out of the client's
         // text field; the candidate window still shows the composition.
 
@@ -446,9 +449,15 @@ void IorEngine::showHint(fcitx::InputContext& ic, const std::string& text) {
         kModeHintUsec / 10,
         [this, watcher](fcitx::EventSourceTime* /*source*/, uint64_t) {
             auto* live = watcher.get();
-            if (live != nullptr && raw_ != nullptr &&
-                ior_engine_preedit(raw_)[0] == '\0') {
-                live->inputPanel().reset();
+            if (live != nullptr && raw_ != nullptr) {
+                if (ior_engine_voice_state(raw_) == 0 &&
+                    ior_engine_preedit(raw_)[0] == '\0') {
+                    live->inputPanel().reset();
+                } else {
+                    // Composing or listening: keep the panel content,
+                    // drop only the hint line itself.
+                    live->inputPanel().setAuxUp(fcitx::Text());
+                }
                 live->updateUserInterface(
                     fcitx::UserInterfaceComponent::InputPanel);
             }

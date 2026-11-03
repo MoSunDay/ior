@@ -1,11 +1,11 @@
 //! Schema extraction: turn a [`Value`] tree into a typed
 //! [`Config`](crate::Config). Wrong values fail with dotted-path errors
-//! (`engine.shift_action: expected one of ...`); unknown keys are
+//! (`engine.enter_action: expected one of ...`); unknown keys are
 //! collected as warnings instead of failing the load.
 
 use crate::model::{
     default_switches, Config, DoublePinyin, Engine, EnterAction, Fuzzy, HotkeyMode, Llm, LlmAsr,
-    PunctValue, ShiftAction, Voice,
+    PunctValue, Voice,
 };
 use crate::value::{kind, Table, Value};
 
@@ -57,14 +57,6 @@ fn parse_engine(value: &Value, warnings: &mut Vec<String>) -> Result<Engine, Str
     let mut engine = Engine::default();
     for (key, value) in table.iter() {
         match key {
-            "shift_action" => {
-                engine.shift_action = parse_enum(
-                    value,
-                    "engine.shift_action",
-                    &["commit", "temp", "none"],
-                    ShiftAction::parse,
-                )?
-            }
             "enter_action" => {
                 engine.enter_action = parse_enum(
                     value,
@@ -388,15 +380,6 @@ mod tests {
         let mut t = default_table();
         t.get_table_mut("engine")
             .unwrap()
-            .insert("shift_action".into(), Value::Str("raw".into()));
-        assert_eq!(
-            from_table(&t).unwrap_err(),
-            "engine.shift_action: expected one of \"commit\", \"temp\", \"none\", got \"raw\""
-        );
-
-        let mut t = default_table();
-        t.get_table_mut("engine")
-            .unwrap()
             .insert("enter_action".into(), Value::Str("space".into()));
         assert_eq!(
             from_table(&t).unwrap_err(),
@@ -423,10 +406,10 @@ mod tests {
         let mut t = default_table();
         t.get_table_mut("engine")
             .unwrap()
-            .insert("shift_action".into(), Value::Int(1));
+            .insert("enter_action".into(), Value::Int(1));
         assert_eq!(
             from_table(&t).unwrap_err(),
-            "engine.shift_action: expected a string, got integer"
+            "engine.enter_action: expected a string, got integer"
         );
     }
 

@@ -4,44 +4,6 @@
 
 use crate::value::{Table, Value};
 
-/// `engine.shift_action`: what Shift does to the un-committed preedit
-/// when switching Chinese -> English.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ShiftAction {
-    /// `"commit"`: commit the raw typed buffer verbatim
-    /// (engine-core `ShiftAction::CommitRaw`).
-    Commit,
-    /// `"temp"`: commit the best candidate, raw text as fallback
-    /// (engine-core `ShiftAction::CommitBest`).
-    Temp,
-    /// `"none"`: drop the composition — the default, so a lone Shift
-    /// never leaks half-typed pinyin into the application
-    /// (engine-core `ShiftAction::Clear`).
-    #[default]
-    Drop,
-}
-
-impl ShiftAction {
-    /// Canonical TOML string.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            ShiftAction::Commit => "commit",
-            ShiftAction::Temp => "temp",
-            ShiftAction::Drop => "none",
-        }
-    }
-
-    /// Parses one of `"commit"` | `"temp"` | `"none"`.
-    pub fn parse(text: &str) -> Option<Self> {
-        match text {
-            "commit" => Some(ShiftAction::Commit),
-            "temp" => Some(ShiftAction::Temp),
-            "none" => Some(ShiftAction::Drop),
-            _ => None,
-        }
-    }
-}
-
 /// `engine.enter_action`: what Enter does to the un-committed preedit.
 /// Mirrors engine-core's `EnterAction`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -175,8 +137,6 @@ pub struct Fuzzy {
 /// The `[engine]` section (mirrors `engine_core::config::EngineConfig`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Engine {
-    /// Shift behavior on Chinese -> English (`commit` | `temp` | `none`).
-    pub shift_action: ShiftAction,
     /// Enter behavior on the un-committed preedit (`raw` | `candidate`).
     pub enter_action: EnterAction,
     /// Double-pinyin mode (`off` | `custom`).
@@ -203,7 +163,6 @@ impl Default for Engine {
     /// Same defaults as `engine_core::config::EngineConfig::default()`.
     fn default() -> Self {
         Engine {
-            shift_action: ShiftAction::default(),
             enter_action: EnterAction::default(),
             double_pinyin: DoublePinyin::default(),
             chinese_punct: false,
@@ -364,10 +323,6 @@ pub fn default_switches() -> Vec<(String, bool)> {
 pub fn to_table(config: &Config) -> Table {
     let mut engine = Table::new();
     engine.insert(
-        "shift_action".into(),
-        Value::Str(config.engine.shift_action.as_str().to_string()),
-    );
-    engine.insert(
         "enter_action".into(),
         Value::Str(config.engine.enter_action.as_str().to_string()),
     );
@@ -520,7 +475,6 @@ mod tests {
         assert_eq!(c.engine.max_candidates, 50);
         assert!(c.engine.user_learning);
         assert!(!c.engine.chinese_punct); // half-width symbols by default
-        assert_eq!(c.engine.shift_action, ShiftAction::Drop); // leak-proof default
         assert_eq!(c.engine.double_pinyin, DoublePinyin::Off);
         assert_eq!(c.engine.prev_page_keys, ["Page_Up", "minus"]);
         assert_eq!(c.engine.next_page_keys, ["Page_Down", "equal"]);
@@ -533,15 +487,6 @@ mod tests {
 
     #[test]
     fn enum_strings_roundtrip() {
-        for (action, text) in [
-            (ShiftAction::Commit, "commit"),
-            (ShiftAction::Temp, "temp"),
-            (ShiftAction::Drop, "none"),
-        ] {
-            assert_eq!(ShiftAction::parse(text), Some(action));
-            assert_eq!(action.as_str(), text);
-        }
-        assert_eq!(ShiftAction::parse("raw"), None);
         for (mode, text) in [
             (DoublePinyin::Off, "off"),
             (DoublePinyin::Natural, "natural"),
@@ -560,9 +505,8 @@ mod tests {
     fn to_table_covers_every_field() {
         let table = to_table(&Config::default());
         let engine = table.get_table("engine").expect("engine");
-        assert_eq!(engine.len(), 10);
+        assert_eq!(engine.len(), 9);
         for key in [
-            "shift_action",
             "enter_action",
             "double_pinyin",
             "chinese_punct",
