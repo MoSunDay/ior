@@ -264,14 +264,14 @@ mod tests {
 
     #[test]
     fn parses_sections_scalars_and_comments() {
-        let source = "# top comment\n[engine]\nchinese_punct = true   # trailing comment\npage_size = 5\nshift_action = \"commit\"\n";
+        let source = "# top comment\n[engine]\nchinese_punct = true   # trailing comment\npage_size = 5\nenter_action = \"candidate\"\n";
         let table = parse(source).expect("valid");
         let engine = table.get_table("engine").expect("engine section");
         assert_eq!(engine.get("chinese_punct"), Some(&Value::Bool(true)));
         assert_eq!(engine.get("page_size"), Some(&Value::Int(5)));
         assert_eq!(
-            engine.get("shift_action"),
-            Some(&Value::Str("commit".into()))
+            engine.get("enter_action"),
+            Some(&Value::Str("candidate".into()))
         );
         assert_eq!(engine.len(), 3);
     }

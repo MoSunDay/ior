@@ -28,8 +28,8 @@
 //    select commits by page-local index (candidate clicks) and returns the
 //    committed text ("" for an invalid index).
 //  - ascii_mode/set_ascii_mode report/force Chinese(0)/English(1); a mode
-//    change runs the core Shift transition (pending preedit handled per
-//    shift_action). NOTE: process_key ALSO toggles the mode on a Shift
+//    change runs the core Shift transition (a pending preedit is committed
+//    exactly like Enter). NOTE: process_key ALSO toggles the mode on a Shift
 //    press keysym; this shell consumes Shift press AND release itself
 //    (release-side toggle) and never forwards Shift to process_key
 //    (pick ONE mechanism).

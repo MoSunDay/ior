@@ -117,15 +117,20 @@ fn enter_raw_commits_staged_then_verbatim_letters() {
     assert!(s.raw.is_empty() && s.staged.is_empty());
 }
 
-/// The default Shift action (Clear) drops the staged picks with the
-/// rest of the composition.
+/// Switching to English commits the staged picks with the rest of the
+/// composition, exactly like the Enter path (`enter_raw_commits_staged_
+/// then_verbatim_letters`).
 #[test]
-fn shift_clear_drops_staged_picks() {
+fn shift_commits_staged_picks_like_enter() {
     let mut s = staged_session();
     typed(&mut s, "panjie");
     stage_pick(&mut s, "盼");
-    assert_eq!(session::process_shift(&mut s), ProcessResult::Editing);
+    assert_eq!(
+        session::process_shift(&mut s),
+        ProcessResult::Committed("盼jie".into())
+    );
     assert!(s.raw.is_empty() && s.staged.is_empty());
+    assert!(s.ascii_mode);
 }
 
 /// A punctuation flush carries the staged hanzi out with it when the
@@ -180,15 +185,15 @@ fn composed_word_deletes_under_the_composed_key() {
     assert!(user_dict::lookup(&s.user_dict, "pan'jie").is_empty());
 }
 
-/// Shift with `shift_action = "temp"` (CommitBest) must carry the staged
+/// A mode switch with `enter_action = "candidate"` must carry the staged
 /// hanzi out when the remainder's best candidate is itself a span — the
 /// trailing composition reset would otherwise drop everything silently
 /// (regression: the staging change once lost the whole input here).
 #[test]
-fn shift_commit_best_flushes_staged_when_best_is_a_span() {
-    use engine_core::config::{EngineConfig, ShiftAction};
+fn shift_candidate_path_flushes_staged_when_best_is_a_span() {
+    use engine_core::config::{EngineConfig, EnterAction};
     let cfg = EngineConfig {
-        shift_action: ShiftAction::CommitBest,
+        enter_action: EnterAction::CommitBest,
         ..default_config()
     };
     let mut s = new_session_with(cfg, Dictionary::from_tsv(TSV).expect("inline tsv"));

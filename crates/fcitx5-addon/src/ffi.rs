@@ -62,8 +62,8 @@
 //!   page-local index instead of committing, keeping the composition.
 //! - `ior_engine_ascii_mode` / `ior_engine_set_ascii_mode` report/force the
 //!   Chinese(0)/English(1) mode. Changing the mode routes through the core
-//!   Shift transition, so a pending preedit is handled per `shift_action`;
-//!   re-setting the current mode is a no-op. Returns the new mode.
+//!   Shift transition: a pending preedit is committed exactly like Enter
+//!   (per `enter_action`); re-setting the mode is a no-op.
 //! - Returned `const char*` values are UTF-8, NUL-terminated, never null,
 //!   and valid **until the next `ior_*` call on the same engine**. The caller
 //!   must never free them and must not retain them across calls.
@@ -428,8 +428,8 @@ pub unsafe extern "C" fn ior_engine_ascii_mode(engine: *const IorEngine) -> u32 
 
 /// Forces the mode (0 = Chinese, 1 = English); returns the resulting mode.
 /// A change runs the core Shift transition, so a pending preedit is
-/// committed/cleared per `shift_action` (the commit text lands in the
-/// pending-commit buffer). Setting the current mode is a no-op.
+/// committed exactly like Enter (per `enter_action`; the commit text lands
+/// in the pending-commit buffer). Setting the current mode is a no-op.
 ///
 /// # Safety
 ///
@@ -642,15 +642,16 @@ mod tests {
     }
 
     #[test]
-    fn shift_keysym_toggles_mode_and_drops_preedit() {
+    fn shift_keysym_toggles_mode_and_commits_like_enter() {
         // SAFETY: engine stays live until ior_engine_free below.
         let engine = test_engine();
         type_keys(engine, &NIHAO);
         assert_eq!(unsafe { ior_engine_ascii_mode(engine) }, 0);
-        // Shift press triggers the toggle; the default shift_action drops
-        // the pending preedit — the toggle must not leak half-typed pinyin.
-        assert_eq!(unsafe { ior_engine_process_key(engine, XK_SHIFT_L) }, 1);
-        assert_eq!(text(unsafe { ior_engine_take_commit(engine) }), "");
+        // Shift press triggers the toggle; the pending preedit is
+        // committed raw, exactly like pressing Enter.
+        assert_eq!(unsafe { ior_engine_process_key(engine, XK_SHIFT_L) }, 2);
+        let raw: String = NIHAO.iter().map(|&k| k as u8 as char).collect();
+        assert_eq!(text(unsafe { ior_engine_take_commit(engine) }), raw);
         assert_eq!(unsafe { ior_engine_ascii_mode(engine) }, 1);
         assert_eq!(text(unsafe { ior_engine_preedit(engine) }), "");
         // English mode: letters and punctuation are forwarded.
@@ -727,8 +728,8 @@ mod tests {
         let engine = test_engine();
         type_keys(engine, &[0x6E, 0x69]); // n i
         assert_eq!(unsafe { ior_engine_set_ascii_mode(engine, 1) }, 1);
-        // Drop default: the pending "ni" is discarded, not committed.
-        assert_eq!(text(unsafe { ior_engine_take_commit(engine) }), "");
+        // Enter-like switch: the pending "ni" is committed raw.
+        assert_eq!(text(unsafe { ior_engine_take_commit(engine) }), "ni");
         // Re-setting the current mode is a no-op (no phantom commit).
         assert_eq!(unsafe { ior_engine_set_ascii_mode(engine, 1) }, 1);
         assert_eq!(text(unsafe { ior_engine_take_commit(engine) }), "");

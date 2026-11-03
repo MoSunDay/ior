@@ -10,7 +10,7 @@
 //! only through `&mut Session`, and reports what the frontend should do
 //! with the key.
 
-use crate::config::{DoublePinyin, EngineConfig, EnterAction, ShiftAction};
+use crate::config::{DoublePinyin, EngineConfig, EnterAction};
 use crate::decoder::{self, Candidate};
 use crate::dict::Dictionary;
 use crate::double_pinyin::{self, DpTable};
@@ -424,44 +424,22 @@ pub fn delete_flat(s: &mut Session, flat_index: usize) -> DeleteOutcome {
     }
 }
 
-/// Toggles Chinese/English mode. Switching to English applies
-/// `config.shift_action` to a non-empty preedit (commit raw / commit the
-/// best candidate, learning included / clear). Switching back to Chinese
-/// just reports `Editing`. Either way the composition is cleared.
+/// Toggles Chinese/English mode. Switching to English with a pending
+/// composition runs the exact Enter logic (`config.enter_action`): the
+/// typed content is committed — raw letters by default, the top candidate
+/// with `EnterAction::CommitBest` — instead of being silently dropped.
+/// Switching back to Chinese just reports `Editing`. Either way the
+/// composition is cleared.
 pub fn process_shift(s: &mut Session) -> ProcessResult {
     s.ascii_mode = !s.ascii_mode;
     let result = if s.ascii_mode && !(s.raw.is_empty() && s.staged.is_empty()) {
-        match s.config.shift_action {
-            ShiftAction::CommitRaw => {
-                let mut text = staged_text(s);
-                text.push_str(&s.raw);
-                reset_composition(s);
-                ProcessResult::Committed(text)
-            }
-            ShiftAction::CommitBest => {
-                let cands = candidates(s, FLAT_CANDIDATE_LIMIT);
-                match cands.first() {
-                    Some(cand) => match commit_candidate(s, cand) {
-                        // A full-coverage pick already committed the
-                        // composed text (composed-key learning included).
-                        committed @ ProcessResult::Committed(_) => committed,
-                        // The best pick only staged a span: the mode
-                        // switch still carries the settled hanzi out —
-                        // the trailing reset would otherwise drop them.
-                        _ => ProcessResult::Committed(staged_text(s)),
-                    },
-                    None => {
-                        let mut text = staged_text(s);
-                        text.push_str(&s.raw);
-                        reset_composition(s);
-                        ProcessResult::Committed(text)
-                    }
-                }
-            }
-            ShiftAction::Clear => {
-                reset_composition(s);
-                ProcessResult::Editing
-            }
+        match handle_enter(s) {
+            // EnterAction::CommitRaw always commits; CommitBest commits
+            // except when the top pick only stages a prefix span — the
+            // mode switch still carries the settled hanzi out, the
+            // trailing reset would otherwise drop them.
+            committed @ ProcessResult::Committed(_) => committed,
+            _ => ProcessResult::Committed(staged_text(s)),
         }
     } else {
         // Back to Chinese, or English with nothing pending: plain editing.

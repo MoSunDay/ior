@@ -223,7 +223,7 @@ mod tests {
     #[test]
     fn apply_full_override_end_to_end() {
         let user = parse(
-            "[engine]\nshift_action = \"temp\"\ndouble_pinyin = \"custom\"\n\
+            "[engine]\nenter_action = \"candidate\"\ndouble_pinyin = \"custom\"\n\
              chinese_punct = false\npage_size = 9\nmax_candidates = 30\n\
              [engine.fuzzy]\nan_ang = true\nn_l = true\n\
              [switches]\nascii_mode = true\nfull_shape = false\n\
@@ -231,7 +231,7 @@ mod tests {
         )
         .expect("valid user file");
         let config = apply(&default_table(), &user).expect("valid patch");
-        assert_eq!(config.engine.shift_action, model::ShiftAction::Temp);
+        assert_eq!(config.engine.enter_action, model::EnterAction::Candidate);
         assert_eq!(config.engine.double_pinyin, model::DoublePinyin::Custom);
         assert!(!config.engine.chinese_punct);
         assert_eq!(config.engine.page_size, 9);

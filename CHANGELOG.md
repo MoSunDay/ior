@@ -536,3 +536,23 @@ M0 里程碑：引擎骨架 + fcitx5 薄壳 + 词级转换全链路打通，GTK/
 ### 验证
 - `cargo test --workspace`：78/78 通过；clippy `-D warnings`、fmt 全绿。
 - 三前端端到端：GTK `你好`、Qt `你好`、XIM `你好/先/vk`（选词与透传）。
+### change(engine)：中英切换等同回车——带出未上屏内容，`shift_action` 配置退役
+
+- **行为变化（用户决策）**：中文模式输入半截拼音（含暂存选字）后切到
+  英文（Shift / 托盘 / FFI `set_ascii_mode` 任一路径），不再按
+  `shift_action` 处理，而是**完全等同回车**：走 `enter_action` 同一
+  逻辑——默认 `raw` 原样上屏（如 `ni'hao` → 上屏 `ni'hao`），
+  `enter_action = "candidate"` 时上屏首选候选（学习照常、span 暂存
+  汉字携带上屏）。切回中文或无待上屏内容时行为不变（仅切模式）。
+- **配置移除**：`engine.shift_action`（`commit|temp|none`）随之退役——
+  三态被 `enter_action` 单轴取代，engine-core `ShiftAction`、
+  ior-config model/schema/patch 镜像删除。旧配置文件中的
+  `shift_action` 键降级为 unknown-key 警告（原为加载警告通道），
+  不再报错、不影响加载。
+- **历史**：b6b407d 曾把默认从 `commit` 改 `none`（防误上屏）；本次
+  反转为"切换即回车"，与主流输入法（搜狗等）切英文带出原码一致。
+- **ABI 不变**：`ior_engine_set_ascii_mode` / Shift keysym 语义仅
+  commit 内容变化，符号集与签名不动。
+- 测试：`process_shift` 四层断言改写（engine-core 默认原码上屏、
+  candidate 路径学习、空缓冲静默、span 暂存带出），ffi/engine_state
+  的"丢弃"断言改为"上屏"断言；378 tests / clippy / fmt / 行数门禁全绿。
