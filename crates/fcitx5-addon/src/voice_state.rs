@@ -94,9 +94,11 @@ pub fn new_runtime(settings: VoiceSettings) -> VoiceRuntime {
     }
 }
 
-/// `(keysym, mods)` of the configured hotkey, `(0, 0)` when disabled.
+/// `(keysym, mods)` of the configured hotkey, `(0, 0)` when disabled —
+/// either `voice.enabled = false` or a dead hotkey spec (`"none"` /
+/// unparsable; keysym 0 never matches a real key).
 pub fn hotkey(runtime: &VoiceRuntime) -> (u32, u32) {
-    if runtime.settings.enabled {
+    if runtime.settings.enabled && runtime.settings.hotkey.keysym != 0 {
         (runtime.settings.hotkey.keysym, runtime.settings.hotkey.mods)
     } else {
         (0, 0)
@@ -323,5 +325,17 @@ mod tests {
         assert_eq!(hotkey(&runtime), (0, 0));
         assert_eq!(toggle(&mut runtime), STATE_IDLE);
         assert_eq!(phase(&runtime), STATE_IDLE);
+    }
+
+    #[test]
+    fn dead_hotkey_spec_gates_like_disabled() {
+        // `hotkey = "none"` (or unparsable): enabled stays true, the
+        // keysym-0 gate must still kill the hotkey — and since no key
+        // can reach toggle, the runtime stays idle.
+        let mut settings = test_settings("cat /dev/null", "http://127.0.0.1:1/x");
+        settings.hotkey.keysym = 0;
+        settings.hotkey.mods = 0;
+        let runtime = new_runtime(settings);
+        assert_eq!(hotkey(&runtime), (0, 0));
     }
 }

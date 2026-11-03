@@ -16,7 +16,8 @@
 //! ```
 //!
 //! `hotkey_*` return the parsed `voice.hotkey` (`(0, 0)` keysym/mods when
-//! voice input is disabled — a keysym of 0 never matches a real key).
+//! voice input is disabled or the hotkey spec is dead (`"none"` /
+//! unparsable) — a keysym of 0 never matches a real key).
 //! State codes: 0 idle, 1 recording, 2 transcribing. `toggle` is the
 //! hotkey press (idle -> recording, active -> cancel), `stop` the
 //! `hold`-mode release (recording -> transcribing). `poll` returns 1

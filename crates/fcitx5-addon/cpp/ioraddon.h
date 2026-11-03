@@ -181,6 +181,13 @@ private:
     // 50ms timer polling ior_engine_voice_poll so transcripts land even
     // without further key events.
     std::unique_ptr<fcitx::EventSourceTime> voicePollEvent_;
+    // Voice-hotkey press/release pairing: X11 auto-repeat re-fires
+    // presses with no release in between, so a press while one is
+    // already held is a repeat and must be swallowed — otherwise a held
+    // toggle hotkey flips recording on/off once per repeat and ends on a
+    // random phase (the "can't turn voice off" bug). Cleared on release
+    // and on reset() in case a release is lost to a focus change.
+    bool voiceHotkeyDown_ = false;
     // The fcitx5 event loop (null in tests): drives the voice poll and
     // the mode-hint timers.
     fcitx::EventLoop* eventLoop_ = nullptr;

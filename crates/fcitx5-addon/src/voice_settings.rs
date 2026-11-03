@@ -53,23 +53,34 @@ pub struct PolishSettings {
 }
 
 /// Copies the `[voice]` / `[llm.asr]` / `[llm]` sections into worker
-/// settings. An unparsable hotkey is reported and replaced by the
-/// default rather than silently disabling voice input.
+/// settings. `hotkey = "none"` (or any unparsable spec) leaves the
+/// hotkey dead (`keysym 0`) after a journal diagnostic — falling back to
+/// the default ctrl+grave made voice impossible to turn off by config.
 pub fn settings_from_config(config: &user_config::Config) -> VoiceSettings {
-    let fallback = Hotkey {
-        keysym: hotkey::KEY_GRAVE,
-        mods: hotkey::MOD_CTRL,
+    let spec = config.voice.hotkey.trim();
+    let disabled = Hotkey { keysym: 0, mods: 0 };
+    let hotkey = if spec.eq_ignore_ascii_case("none") {
+        disabled
+    } else {
+        match hotkey::parse_hotkey(spec) {
+            Some(hotkey) => hotkey,
+            None => {
+                eprintln!(
+                    "ior: voice.hotkey {:?} not recognized; hotkey disabled \
+                     (use e.g. \"ctrl+grave\", or \"none\" to turn it off)",
+                    config.voice.hotkey
+                );
+                disabled
+            }
+        }
     };
-    let hotkey = hotkey::parse_hotkey(&config.voice.hotkey).unwrap_or(fallback);
-    if hotkey::parse_hotkey(&config.voice.hotkey).is_none() {
-        eprintln!(
-            "ior: voice.hotkey {:?} not recognized; using ctrl+grave",
-            config.voice.hotkey
-        );
-    }
     VoiceSettings {
         enabled: config.voice.enabled,
-        hotkey_label: hotkey::hotkey_name(hotkey),
+        hotkey_label: if hotkey.keysym == 0 {
+            "none".to_string()
+        } else {
+            hotkey::hotkey_name(hotkey)
+        },
         hotkey,
         hold_mode: config.voice.hotkey_mode == user_config::HotkeyMode::Hold,
         capture_command: config.voice.capture_command.clone(),
@@ -111,5 +122,38 @@ mod tests {
         assert!(!settings.hold_mode);
         assert_eq!(settings.asr.model, "Qwen/Qwen3-ASR-4B");
         assert!(settings.polish.is_none(), "llm.enabled defaults false");
+    }
+
+    fn settings_with_hotkey(spec: &str) -> VoiceSettings {
+        let mut config = Config::default();
+        config.voice.hotkey = spec.to_string();
+        settings_from_config(&config)
+    }
+
+    #[test]
+    fn hotkey_none_disables_the_hotkey() {
+        for spec in ["none", "None", " NONE "] {
+            let settings = settings_with_hotkey(spec);
+            assert_eq!(settings.hotkey.keysym, 0, "{spec:?}");
+            assert_eq!(settings.hotkey.mods, 0, "{spec:?}");
+            assert_eq!(settings.hotkey_label, "none", "{spec:?}");
+            assert!(settings.enabled, "enabled stays a separate switch");
+        }
+    }
+
+    #[test]
+    fn unparsable_hotkey_disables_rather_than_reenabling_the_default() {
+        // A typo used to silently resurrect ctrl+grave — voice could not
+        // be turned off via the hotkey setting (regression pin).
+        let settings = settings_with_hotkey("off");
+        assert_eq!(settings.hotkey.keysym, 0);
+        assert_eq!(settings.hotkey_label, "none");
+    }
+
+    #[test]
+    fn parsed_hotkey_survives_the_none_path() {
+        let settings = settings_with_hotkey("ctrl+shift+u");
+        assert_eq!(settings.hotkey.mods, hotkey::MOD_CTRL | hotkey::MOD_SHIFT);
+        assert_eq!(settings.hotkey_label, "ctrl+shift+u");
     }
 }
