@@ -4,6 +4,35 @@
 
 ## [Unreleased]
 
+### fix(voice)：语音"关不掉"两根因——toggle 热键自动重复抖动 + 非法热键静默回退默认
+
+- **根因一（主症状：取消后又在录音）**：toggle 模式下热键无自动重复
+  防护——X11 按住 `ctrl+grave` 会连发 press（其间无 release），每次
+  press 都执行 toggle（录音→取消→录音→…），松手时相位取决于重复
+  次数奇偶：想取消反而大概率停在录音中。hold 模式本有 `state==0`
+  守卫，toggle 没有。修复：薄壳 `handleVoiceHotkey` 增加按下/释放
+  配对（`voiceHotkeyDown_`，与 Shift 切换同法）——配对中的 press 视
+  为重复键吞掉；该键位的任何 release（含修饰键已不匹配的，如先松
+  Ctrl）都复位配对标志，`reset()`（焦点切换）兜底防漏 release 卡死。
+- **根因二（配置关不掉）**：`voice.hotkey` 解析失败时静默回退
+  `ctrl+grave`（旧行为"宁可回默认不可静默关"），写 `"none"`/`"off"`
+  等值的用户永远关不掉热键。修复：`hotkey = "none"`（大小写/空白
+  不敏感）显式关闭热键；解析失败也关闭热键并打 journal 诊断
+  （提示正确写法）。`voice_state::hotkey()` 以 `keysym != 0` 为门，
+  keysym 0 永不匹配真实按键。`voice.enabled = false` 整体关闭语义
+  不变（已有回归覆盖）。
+- **部署**：lib 已重装并 `fcitx5 --replace`，运行进程经 /proc maps
+  确认映射新库，journal 无 ior 告警。按键序列（按住热键松手只切
+  一次、再按即取消、Ctrl 先松后下一按仍生效、`hotkey="none"` 后
+  ctrl+grave 透传）**待人工验证**——headless 无法合成 X11 重复键流
+  与修饰键释放次序（评审跟进：初稿曾声明已验证，降级为事实）。
+- **评审跟进**：二轮评审发现 (1) 修饰键先松的 release 在 mod 检查
+  早退、执行不到标志复位，同焦点内热键会被永久吞掉——已改为该键
+  位任何 release 先复位；(2) 真机行为声明失实——已降级。
+- 测试：voice_settings 新增 3 例（`none` 三态、非法 spec 不再复活
+  默认热键、正常 spec 仍解析）；voice_state 补 `hotkey()` 死键分支
+  单测；384 tests / clippy / fmt / 行数门禁全绿。
+
 ### Added
 - 语音转写简体化：新增零依赖 `t2s` crate（OpenCC t2s 表自 `dict-tools`
   提炼共享），`voice_worker` 在转写后统一转简体再上屏/润色——修复

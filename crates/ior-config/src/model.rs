@@ -183,7 +183,8 @@ impl Default for Engine {
 pub struct Voice {
     /// Voice input on/off (the hotkey is dead while false).
     pub enabled: bool,
-    /// Hotkey spec, e.g. `"ctrl+grave"` (alias `"ctrl+\`"`); parsed by
+    /// Hotkey spec, e.g. `"ctrl+grave"` (alias `"ctrl+\`"`); `"none"`
+    /// (or any unparsable spec) leaves the hotkey dead. Parsed by
     /// `voice::hotkey::parse_hotkey` in the addon.
     pub hotkey: String,
     /// Hotkey semantics (`toggle` | `hold`).

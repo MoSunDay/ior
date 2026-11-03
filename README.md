@@ -116,7 +116,7 @@ an_ang = true
 # 语音输入 V1：ctrl+` 说话 → node02 Qwen3-ASR 转写上屏（默认即开）
 [voice]
 enabled = true            # false 时热键完全透传
-hotkey = "ctrl+grave"     # 热键可配；hotkey_mode = "toggle" | "hold"
+hotkey = "ctrl+grave"     # 热键可配；"none" 关闭热键；hotkey_mode = "toggle" | "hold"
 capture_command = "auto"  # auto 探测 pw-record → parec → arecord
 max_duration_ms = 60000   # 单次上限，到点自动停并转写
 

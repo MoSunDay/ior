@@ -350,6 +350,7 @@ void IorEngine::toggleDeleteMode(fcitx::InputContext* ic) {
 void IorEngine::reset(const fcitx::InputMethodEntry& /*entry*/,
                       fcitx::InputContextEvent& event) {
     exitDeleteMode();
+    voiceHotkeyDown_ = false; // a release may have been lost on refocus
     if (raw_ != nullptr) {
         ior_engine_reset(raw_);
     }
@@ -474,6 +475,13 @@ bool IorEngine::handleVoiceHotkey(fcitx::InputContext* ic,
     if (hotkeySym == 0 || sym != hotkeySym) {
         return false;
     }
+    // Any release of the hotkey key re-arms the press/release pairing —
+    // including one whose modifiers no longer match: rolling off Ctrl
+    // before the key must not leave the flag set, or every later press
+    // would be swallowed as an auto-repeat.
+    if (keyEvent.isRelease()) {
+        voiceHotkeyDown_ = false;
+    }
     constexpr uint32_t kModMask = (1u << 0) /*Shift*/ | (1u << 2) /*Ctrl*/ |
                                   (1u << 3) /*Alt*/ | (1u << 6) /*Super*/;
     const uint32_t states = keyEvent.key().states().toInteger();
@@ -482,6 +490,14 @@ bool IorEngine::handleVoiceHotkey(fcitx::InputContext* ic,
     }
     const bool hold = ior_engine_voice_hotkey_mode(raw_) != 0;
     if (!keyEvent.isRelease()) {
+        if (voiceHotkeyDown_) {
+            // Auto-repeat press (no release in between): swallow it or a
+            // held toggle hotkey flips once per repeat and ends on a
+            // random phase — cancel would restart recording.
+            keyEvent.filterAndAccept();
+            return true;
+        }
+        voiceHotkeyDown_ = true;
         // toggle: idle -> record, active -> cancel.
         // hold: start when idle, otherwise ignore the repeat press.
         if (!hold || ior_engine_voice_state(raw_) == 0) {
