@@ -66,6 +66,26 @@ fn second_page_digit_selects_sixth_candidate() {
 }
 
 #[test]
+fn space_after_paging_commits_current_page_top() {
+    let mut s = ma_session("ma", default_config());
+    assert!(next_page(&mut s));
+    // Space on page 1 commits the page-local top ("五"), not page 0's "十".
+    assert_eq!(
+        process_key(&mut s, ' '),
+        ProcessResult::Committed("五".to_string())
+    );
+}
+
+#[test]
+fn space_on_first_page_commits_top_candidate() {
+    let mut s = ma_session("ma", default_config());
+    assert_eq!(
+        process_key(&mut s, ' '),
+        ProcessResult::Committed("十".to_string())
+    );
+}
+
+#[test]
 fn prev_page_wraps_to_last_page() {
     let mut s = ma_session("ma", default_config());
     assert!(prev_page(&mut s));

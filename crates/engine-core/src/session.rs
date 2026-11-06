@@ -187,14 +187,16 @@ fn handle_digit(s: &mut Session, ch: char) -> ProcessResult {
     select_flat(s, s.page * page_size(s) + offset)
 }
 
-/// Space: commit the top candidate, or pass the raw letters through
-/// when nothing can be decoded (typed `'` separators are dropped).
+/// Space: commit the top candidate of the current page (the same
+/// page-offset addressing as digit selection), or pass the raw letters
+/// through when nothing can be decoded (typed `'` separators are dropped).
 fn handle_commit_or_passthrough(s: &mut Session) -> ProcessResult {
     if s.raw.is_empty() && s.staged.is_empty() {
         return ProcessResult::Forwarded;
     }
     let cands = candidates(s, FLAT_CANDIDATE_LIMIT);
-    match cands.first() {
+    let top = s.page * page_size(s);
+    match cands.get(top).or_else(|| cands.first()) {
         Some(cand) => commit_candidate(s, cand),
         None => {
             let mut text = staged_text(s);
