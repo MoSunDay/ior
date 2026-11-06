@@ -115,14 +115,14 @@ enter_action = "raw"       # raw（回车上屏拼音原码）| candidate（同�
 z_zh = true
 an_ang = true
 
-# 语音输入：ctrl+` 按一次进入语音输入（录音），再按一次停止并转写（转写中再按取消） → auto 本地 SenseVoice 优先、node02 Qwen3-ASR 兜底（默认即开；`live` 可选实时预览）
+# 语音输入：ctrl+` 按一次进入语音输入（录音），再按一次停止并转写（转写中再按取消） → auto 本地 SenseVoice 优先、node02 Qwen3-ASR 兜底（默认即开；`live` 实时预览同样默认开）
 [voice]
 enabled = true            # false 时热键完全透传
 hotkey = "ctrl+grave"     # 热键可配；"none" 关闭热键
 hotkey_mode = "toggle"    # toggle=按下开始，再按停止并转写 | hold=按住说话
 capture_command = "auto"  # auto 探测 pw-record → parec → arecord
 max_duration_ms = 60000   # 单次上限，到点自动停并转写（toggle 也可再按热键停止）
-live = false              # true=录音期间面板实时预览（远端 trailing window 重转写）
+live = true               # 录音期间面板实时预览（默认开；链上无远端引擎则回退纯提示）
 live_interval_ms = 2000   # live 预览节奏，500..=10000 ms
 
 [voice.asr]               # ASR 引擎选择：auto = 本地 SenseVoice → 远端兜底
@@ -171,7 +171,7 @@ endpoint = "http://node02:8001/v1/chat/completions"
 | M4+/M5 | 编译期简体（OpenCC t2s）✅、评测体系（CI 门禁）✅；运行时简繁切换、反查与码表方案为 backlog |
 | 二期 V1 ✅ 远端先行 | 按键说话→采集→node02 Qwen3-ASR 转写（+可选润色）：voice crate、FFI v2 语音符号（现 11 个）、C++ 热键/轮询/上屏；部署脚本与文档见 `docs/NODE02-DEPLOY.md` |
 | 二期 V1.5 ✅ 本地可选 | SenseVoice-Small 经 shell out `sherpa-onnx-offline` 接入；`auto` 本地优先、远端兜底，模型可选用 `scripts/download_models.sh --sensevoice` 下载（`docs/SENSEVOICE-LOCAL.md`） |
-| 二期 V1.6 ✅ 可选实时预览 | `voice.live = true` 时录音期间用远端 trailing-window 重转写合成实时字幕（本地引擎不参与 partials）；二按/松开仍走全量引擎链并一次性上屏 |
+| 二期 V1.6 ✅ 实时预览（默认开） | 录音期间用远端 trailing-window 重转写合成实时字幕（本地引擎不参与 partials，`voice.live = false` 关闭）；二按/松开仍走全量引擎链并一次性上屏 |
 | 二期 V2~V4 | 语音：V2 本地 VAD+流式 ASR → V3 批量精解码 → V4 常驻 GPU 引擎槽位与模型管理 |
 
 ## 数据版权注意

@@ -197,7 +197,7 @@ mod tests {
         );
         assert_eq!(settings.hotkey_label, "ctrl+`");
         assert!(!settings.hold_mode);
-        assert!(!settings.live);
+        assert!(settings.live, "live preview is the default UX");
         assert_eq!(settings.live_interval_ms, 2_000);
         assert_eq!(remote_of(&settings).model, "Qwen/Qwen3-ASR-4B");
         assert!(settings.polish.is_none(), "llm.enabled defaults false");

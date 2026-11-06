@@ -81,11 +81,11 @@ curl -s http://node02:8000/v1/audio/transcriptions \
 
 截图/输出记录贴到本节下方（真机执行后补）。
 
-### live 子清单（opt-in，`voice.live = true`）
+### live 子清单（默认开启，`voice.live = false` 可关）
 
 | # | 操作 | 期望 |
 |---|------|------|
-| L1 | 配置 `voice.live = true`（可配合 `live_interval_ms = 1200` 与实时回放 `/tmp/ior-voice-test.wav` 的采集桩）并重装/重启 | 开启后行为与 #1 一致；首个 interval 到达前面板仍是 listening 提示 |
+| L1 | 默认即 live（可配合 `live_interval_ms = 1200` 与实时回放 `/tmp/ior-voice-test.wav` 的采集桩）重装/重启 | 行为与 #1 一致；首个 interval 到达前面板仍是 listening 提示 |
 | L2 | 持续说话/回放 ≥2 个 interval，先不停止 | 每拍最多一个远端 partial；面板 preedit 显示最新临时转写（可能回改），aux 行保留 listening 提示，候选区隐藏 |
 | L3 | L2 后二按进入 transcribing，再按热键取消 | 面板清空；迟到的最终结果不上屏，partial 残留也不进入 idle 后的 preedit |
 | L4 | 重复 L2 后二按热键（或 hold 松开/max 到点） | 面板转 transcribing；最终只 commit 一次**完整录音**的多引擎转写结果，partial 不参与上屏 |
