@@ -84,9 +84,14 @@ int32_t ior_engine_userdb_decay(IorEngineC* engine, uint32_t elapsed_secs,
 // Voice input (additive, still ABI v2). State codes: 0 idle, 1
 // recording, 2 transcribing. hotkey_keysym returns 0 while voice input
 // is disabled (a keysym of 0 never matches a real key). mods uses the
-// fcitx KeyState bits (Ctrl = 1<<2); mode: 0 toggle, 1 hold. poll
-// returns 1 exactly once per finished transcript -> take_text. Strings
-// follow the shared lifetime rule (until the next ior_* call).
+// fcitx KeyState bits (Ctrl = 1<<2); mode: 0 toggle, 1 hold (0 while
+// disabled). toggle: idle -> recording; toggle-mode recording -> stop +
+// transcribe; transcribing -> cancel; hold-mode recording press is a
+// no-op. stop: hold-mode release, recording -> transcribing. poll returns
+// 1 exactly once per finished transcript -> take_text. With voice.live,
+// partial_text exposes the latest provisional transcript for display
+// only (never committed; empty when null/idle). Strings follow the
+// shared lifetime rule (until the next ior_* call).
 uint32_t ior_engine_voice_hotkey_keysym(const IorEngineC* engine);
 uint32_t ior_engine_voice_hotkey_mods(const IorEngineC* engine);
 uint32_t ior_engine_voice_hotkey_mode(const IorEngineC* engine);
@@ -96,6 +101,7 @@ uint32_t ior_engine_voice_toggle(IorEngineC* engine);
 uint32_t ior_engine_voice_stop(IorEngineC* engine);
 uint32_t ior_engine_voice_cancel(IorEngineC* engine);
 uint32_t ior_engine_voice_poll(IorEngineC* engine);
+const char* ior_engine_voice_partial_text(const IorEngineC* engine);
 const char* ior_engine_voice_take_text(IorEngineC* engine);
 uint32_t ior_engine_abi_version(void);
 } // extern "C"
@@ -178,14 +184,18 @@ private:
     // Where a finished voice transcript is committed. Like the shared
     // engine itself, one IC is an accepted simplification (M0).
     fcitx::InputContext* lastIc_ = nullptr;
+    // Last live-transcript rendered by pollVoice; only a changed partial
+    // repaints the panel (the poll timer runs every 50ms).
+    std::string voicePartial_;
     // 50ms timer polling ior_engine_voice_poll so transcripts land even
     // without further key events.
     std::unique_ptr<fcitx::EventSourceTime> voicePollEvent_;
     // Voice-hotkey press/release pairing: X11 auto-repeat re-fires
     // presses with no release in between, so a press while one is
     // already held is a repeat and must be swallowed — otherwise a held
-    // toggle hotkey flips recording on/off once per repeat and ends on a
-    // random phase (the "can't turn voice off" bug). Cleared on release
+    // toggle hotkey advances the voice phase once per repeat (stop then
+    // cancel) and ends on a random phase.
+    // Cleared on release
     // and on reset() in case a release is lost to a focus change.
     bool voiceHotkeyDown_ = false;
     // The fcitx5 event loop (null in tests): drives the voice poll and

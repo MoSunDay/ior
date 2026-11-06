@@ -12,13 +12,13 @@
 应用 (GTK / Qt / XIM)
         │
         ▼
-    fcitx5  ──加载──►  ior C++ 薄壳 (≤500 行, crates/fcitx5-addon/cpp)
+    fcitx5  ──加载──►  ior C++ 薄壳 (≤800 行, crates/fcitx5-addon/cpp)
                           │  C ABI (extern "C")
                           ▼
                   ior_engine (Rust cdylib/staticlib)
                   └─ engine-core  纯函数引擎：切分 / 词库 / 解码 / 自学习
                           │
-                          ├── voice  语音输入(V1): 热键采集→node02 远端 ASR
+                          ├── voice  语音输入: 热键采集→本地 SenseVoice / node02 ASR
                           └── llm    (可选)转写润色: node02 chat 服务
 ```
 
@@ -30,8 +30,8 @@
 | `dict-tools` | 独立词库工具链：TSV / rime `dict.yaml` ↔ `.ior` v2，build/inspect/export/merge/compile/validate/train；`compile --simplify` 用 vendored OpenCC t2s 表输出简体 |
 | `ior-config` | 零依赖极简 TOML 子集 + 配置 schema/default/patch/校验（addon 启动加载） |
 | `bench` | 自研计时的性能与端到端互锁基准（编译/加载/查询/整句解码） |
-| `fcitx5-ior` (fcitx5-addon) | C ABI 桥（Rust，staticlib/cdylib）+ ≤500 行 C++ 薄壳接入 fcitx5 |
-| `voice` | 语音输入 V1：热键解析、录音采集（pw-record/parec/arecord）、WAV 封装、零依赖 http/multipart/json、OpenAI 兼容转写客户端（远端 Qwen3-ASR） |
+| `fcitx5-ior` (fcitx5-addon) | C ABI 桥（Rust，staticlib/cdylib）+ ≤800 行 C++ 薄壳接入 fcitx5 |
+| `voice` | 语音输入：热键解析、录音采集（pw-record/parec/arecord）、WAV 封装、本地 SenseVoice（shell out sherpa-onnx-offline）、零依赖 http/multipart/json、OpenAI 兼容远端转写（Qwen3-ASR）、多引擎降级链 |
 | `llm` | 润色辅助（V1 远端可选）：延迟预算/降级策略/prompt 模板；转写润色经 node02 chat 服务 |
 
 ## 快速开始
@@ -53,8 +53,10 @@ cargo run -p dict-tools -- --help
 # 全量词库：安装入库的预编译 core.ior / core.gram（--user 装到用户目录）
 scripts/install-core-dict.sh
 
-# 二期模型下载计划（本地 onnx/GGUF 清单，V2+ 实现；V1 用远端服务）
-scripts/download_models.sh
+# 本地 SenseVoice 模型（可选，V1.5；未装时 auto 仍走 node02 远端）
+scripts/download_models.sh --sensevoice
+# 查看其余 V2+ 模型清单（VAD/流式/批处理）
+scripts/download_models.sh --list
 
 # node02 语音服务一键部署（ASR 8000 + 可选润色 8001，见 docs/NODE02-DEPLOY.md）
 scripts/deploy-asr-node02.sh m@node02 --with-llm
@@ -113,14 +115,25 @@ enter_action = "raw"       # raw（回车上屏拼音原码）| candidate（同�
 z_zh = true
 an_ang = true
 
-# 语音输入 V1：ctrl+` 说话 → node02 Qwen3-ASR 转写上屏（默认即开）
+# 语音输入：ctrl+` 按一次进入语音输入（录音），再按一次停止并转写（转写中再按取消） → auto 本地 SenseVoice 优先、node02 Qwen3-ASR 兜底（默认即开；`live` 可选实时预览）
 [voice]
 enabled = true            # false 时热键完全透传
-hotkey = "ctrl+grave"     # 热键可配；"none" 关闭热键；hotkey_mode = "toggle" | "hold"
+hotkey = "ctrl+grave"     # 热键可配；"none" 关闭热键
+hotkey_mode = "toggle"    # toggle=按下开始，再按停止并转写 | hold=按住说话
 capture_command = "auto"  # auto 探测 pw-record → parec → arecord
-max_duration_ms = 60000   # 单次上限，到点自动停并转写
+max_duration_ms = 60000   # 单次上限，到点自动停并转写（toggle 也可再按热键停止）
+live = false              # true=录音期间面板实时预览（远端 trailing window 重转写）
+live_interval_ms = 2000   # live 预览节奏，500..=10000 ms
 
-[llm.asr]                 # 转写服务（OpenAI 兼容 /v1/audio/transcriptions）
+[voice.asr]               # ASR 引擎选择：auto = 本地 SenseVoice → 远端兜底
+engine = "auto"           # auto | sensevoice | remote
+fallback = true           # 首选引擎失败后尝试下一个
+sensevoice_command = "auto"        # auto 探测 sherpa-onnx-offline；也可写显式 argv
+sensevoice_model_dir = "auto"      # auto 探测 $XDG_DATA_HOME/ior/models/sensevoice-small
+sensevoice_threads = 2
+timeout_ms = 20000
+
+[llm.asr]                 # 远端转写服务（OpenAI 兼容 /v1/audio/transcriptions）
 endpoint = "http://node02:8000/v1/audio/transcriptions"
 model = "Qwen/Qwen3-ASR-4B"
 
@@ -129,9 +142,18 @@ enabled = false
 endpoint = "http://node02:8001/v1/chat/completions"
 ```
 
-语音细节（部署、安全模型、密钥经环境变量 `IOR_ASR_API_KEY` /
-`IOR_LLM_API_KEY` 而非配置文件）见 `docs/NODE02-DEPLOY.md`；验证清单见
-`docs/VOICE-VERIFY.md`。
+本地模型是可选的：未安装时 `engine = "auto"` 仍只走远端，现有用户行为
+不变。安装 `sherpa-onnx-offline`（版本钉死）与模型、配置矩阵、降级 journal
+和真机验证清单见 `docs/SENSEVOICE-LOCAL.md`。远端部署、安全模型、密钥经
+环境变量 `IOR_ASR_API_KEY` / `IOR_LLM_API_KEY` 而非配置文件，见
+`docs/NODE02-DEPLOY.md`；验证清单见 `docs/VOICE-VERIFY.md`。
+
+`voice.live` 是**客户端合成的预览**，不是原生流式 ASR：当前转写端点只接受
+完整 WAV。录音期间 ior 每 `live_interval_ms` 用链上第一个远端引擎重转写
+最近 30 s 音频，同一时刻最多一个 partial 请求，返回文本整体替换面板预览
+（可能回改，不保证单调增长）；本地 SenseVoice 每次调用都要重载模型，不参
+与 partials。二按/松开/max 到点仍对完整录音走既有引擎链、润色与一次性
+上屏，预览文本本身不会上屏。
 
 `[switches]` / `[punct]` 已被解析保留，但尚未驱动会话（P4 收尾项）。
 
@@ -147,8 +169,10 @@ endpoint = "http://node02:8001/v1/chat/completions"
 | M3.5 🟡 部分 | `ior-config` TOML/schema/patch + 启动映射 ✅；switches/punct 生效、热重载、配置 UI 待做 |
 | M4 🟡 部分 | 分页/标点/Shift 中英/FFI v2 ✅ 真机实测；以词定字/符号面板/per-IC/状态区/联想待做 |
 | M4+/M5 | 编译期简体（OpenCC t2s）✅、评测体系（CI 门禁）✅；运行时简繁切换、反查与码表方案为 backlog |
-| 二期 V1 ✅ 远端先行 | 按键说话→采集→node02 Qwen3-ASR 转写（+可选润色）：voice crate、FFI v2 增补 10 符号、C++ 热键/轮询/上屏；部署脚本与文档见 `docs/NODE02-DEPLOY.md` |
-| 二期 V2~V4 | 语音：V2 本地 VAD+流式 ASR → V3 批量精解码 → V4 模型管理与下载 |
+| 二期 V1 ✅ 远端先行 | 按键说话→采集→node02 Qwen3-ASR 转写（+可选润色）：voice crate、FFI v2 语音符号（现 11 个）、C++ 热键/轮询/上屏；部署脚本与文档见 `docs/NODE02-DEPLOY.md` |
+| 二期 V1.5 ✅ 本地可选 | SenseVoice-Small 经 shell out `sherpa-onnx-offline` 接入；`auto` 本地优先、远端兜底，模型可选用 `scripts/download_models.sh --sensevoice` 下载（`docs/SENSEVOICE-LOCAL.md`） |
+| 二期 V1.6 ✅ 可选实时预览 | `voice.live = true` 时录音期间用远端 trailing-window 重转写合成实时字幕（本地引擎不参与 partials）；二按/松开仍走全量引擎链并一次性上屏 |
+| 二期 V2~V4 | 语音：V2 本地 VAD+流式 ASR → V3 批量精解码 → V4 常驻 GPU 引擎槽位与模型管理 |
 
 ## 数据版权注意
 

@@ -217,15 +217,24 @@ engine-core、不内嵌 425 音节表，需人工比对）。
 ## 二期模型清单
 
 语音与 LLM 模型不进入本仓库（`data/models/`、`*.onnx`、`*.gguf` 均已
-在 `.gitignore` 中忽略）。计划清单见 `crates/voice`（`default_model_manifest`）
-与 `scripts/download_models.sh`（M0 仅打印计划，V4 实现下载）：
+在 `.gitignore` 中忽略）。语音清单由 `crates/voice` 的
+`default_model_manifest()` 与 `scripts/download_models.sh --list` 维护；
+V1.5 仅 `--sensevoice` 提供真实下载，其余为 V2+ 路线图：
+
+### 语音模型（manifest 共 5 个）
+
+| 模型 | 用途 | 大小（约） | 下载 |
+|------|------|-----------:|------|
+| sensevoice-small | 本地 ASR（CPU int8） | 230 MB | V1.5 `--sensevoice` |
+| silero-vad | 语音活动检测（VAD） | 2 MB | V2+ |
+| sherpa-onnx zipformer 中英双语流式 | 流式 ASR | 100 MB | V2+ |
+| whisper-small | 离线精解码 | 460 MB | V2+ |
+| whisper-turbo | 离线快速解码 | 750 MB | V2+ |
+
+### LLM（独立路线图，尚未实现下载）
 
 | 模型 | 用途 | 大小（约） |
 |------|------|-----------:|
-| silero-vad | 语音活动检测（VAD） | 2 MB |
-| sherpa-onnx zipformer 中英双语流式 | 流式 ASR | 100 MB |
-| whisper-small | 离线精解码 | 460 MB |
-| whisper-turbo | 离线快速解码 | 750 MB |
 | qwen2.5-1.5b/3b/7b-instruct（Q4_K_M） | 本地润色/标点 | 1-4.5 GB |
 
 ## 数据版权与来源（重要）

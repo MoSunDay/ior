@@ -59,6 +59,7 @@ pub mod ffi_userdict;
 pub mod ffi_voice;
 pub mod ffi_width;
 mod keysym;
-pub mod voice_settings;
+pub mod voice_live;
+mod voice_settings;
 mod voice_state;
 pub mod voice_worker;

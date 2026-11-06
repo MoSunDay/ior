@@ -7,6 +7,9 @@ use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdout, Command, Stdio};
+use std::sync::mpsc::{self, Sender};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 /// Mono recording, fixed by the pipeline.
 pub const CHANNELS: u16 = 1;
@@ -97,19 +100,85 @@ fn is_executable_mode(_meta: &fs::Metadata) -> bool {
     false
 }
 
+/// Watchdog wake-up cadence: how long between `should_kill` checks.
+const WATCHDOG_TICK: Duration = Duration::from_millis(100);
+
 /// A running capture process. Fields are public so worker loops can
 /// stream-read stdout and kill the process on stop; [`Drop`] guarantees
 /// the child is reaped even on early error returns.
 pub struct Recorder {
-    /// The capture process.
-    pub child: Child,
+    /// The capture process, shared with the kill watchdog: a recorder
+    /// that never writes a byte blocks `read` forever, and only the
+    /// child's death (EOF on the pipe) can end that read.
+    pub child: Arc<Mutex<Child>>,
     /// Its stdout pipe (raw audio stream).
     pub stdout: ChildStdout,
+    /// Disarms the kill watchdog when dropped, i.e. when the capture
+    /// loop ended before the watchdog had to fire.
+    watchdog: Option<Sender<()>>,
 }
 
 /// Spawns `argv` with stdout piped and stderr inherited (recorder
 /// diagnostics go to the journal, not into the audio stream).
 pub fn start(argv: &[String]) -> io::Result<Recorder> {
+    let (child, stdout) = spawn(argv)?;
+    Ok(Recorder {
+        child,
+        stdout,
+        watchdog: None,
+    })
+}
+
+/// [`start`] plus a kill watchdog. A recorder that never writes a byte
+/// (wedged audio server, busy device, blocking custom command) blocks
+/// `read` forever: the byte cap never fires with no bytes flowing and
+/// the between-reads stop check never runs — only killing the child
+/// (EOF on the pipe) ends the capture. The watchdog kills it at
+/// `deadline` (the auto-stop bound) or as soon as `should_kill` returns
+/// true (manual stop/cancel), whichever comes first, then exits; it
+/// disarms itself when the returned [`Recorder`] is dropped first.
+pub fn start_guarded(
+    argv: &[String],
+    deadline: Instant,
+    should_kill: Arc<dyn Fn() -> bool + Send + Sync>,
+) -> io::Result<Recorder> {
+    let (child, stdout) = spawn(argv)?;
+    let (tx, rx) = mpsc::channel::<()>();
+    let watched = Arc::clone(&child);
+    let spawn_watchdog = std::thread::Builder::new()
+        .name("ior-recorder-watchdog".to_string())
+        .spawn(move || loop {
+            match rx.recv_timeout(WATCHDOG_TICK) {
+                // Disarmed: the capture loop ended first.
+                Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => return,
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+            }
+            if should_kill() || Instant::now() >= deadline {
+                kill_child(&watched);
+                return;
+            }
+        });
+    if spawn_watchdog.is_err() {
+        kill_child(&child);
+        return Err(io::Error::other("recorder watchdog spawn failed"));
+    }
+    Ok(Recorder {
+        child,
+        stdout,
+        watchdog: Some(tx),
+    })
+}
+
+/// Kills the child without reaping: the capture loop's `stop` (or the
+/// `Drop`) reaps, exactly once, on its own thread.
+fn kill_child(child: &Arc<Mutex<Child>>) {
+    let mut guard = child
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _ = guard.kill();
+}
+
+fn spawn(argv: &[String]) -> io::Result<(Arc<Mutex<Child>>, ChildStdout)> {
     let mut child = Command::new(&argv[0])
         .args(&argv[1..])
         .stdin(Stdio::null())
@@ -117,13 +186,21 @@ pub fn start(argv: &[String]) -> io::Result<Recorder> {
         .stderr(Stdio::inherit())
         .spawn()?;
     let stdout = child.stdout.take().expect("stdout was piped");
-    Ok(Recorder { child, stdout })
+    Ok((Arc::new(Mutex::new(child)), stdout))
 }
 
 /// Stops a recorder: kill (it would never exit on its own) and reap.
+/// Also disarms the watchdog so it never fires on a dead pid.
 pub fn stop(recorder: &mut Recorder) {
-    let _ = recorder.child.kill();
-    let _ = recorder.child.wait();
+    {
+        let mut guard = recorder
+            .child
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _ = guard.kill();
+        let _ = guard.wait();
+    }
+    recorder.watchdog = None;
 }
 
 impl Drop for Recorder {
@@ -151,6 +228,50 @@ pub fn read_all(
             Ok(0) => break,
             Ok(n) => {
                 pcm.extend_from_slice(&chunk[..n]);
+                if pcm.len() >= max_bytes {
+                    stop(recorder);
+                    break;
+                }
+            }
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(pcm)
+}
+
+/// [`read_all`] with time-sized snapshots: every `interval_bytes` of
+/// captured audio the accumulated stream is handed to `on_interval` (the
+/// live worker turns each snapshot into a provisional transcript). The
+/// callback must stay cheap — the recorder's stdout pipe backs up while
+/// it runs, so live ASR work happens on its own thread.
+pub fn read_live<F>(
+    recorder: &mut Recorder,
+    max_bytes: usize,
+    interval_bytes: usize,
+    should_stop: Option<&dyn Fn() -> bool>,
+    mut on_interval: F,
+) -> io::Result<Vec<u8>>
+where
+    F: FnMut(&[u8]),
+{
+    let interval = interval_bytes.max(1);
+    let mut next_snapshot = interval;
+    let mut pcm = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        if should_stop.is_some_and(|check| check()) {
+            stop(recorder);
+            break;
+        }
+        match recorder.stdout.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => {
+                pcm.extend_from_slice(&chunk[..n]);
+                while pcm.len() >= next_snapshot {
+                    on_interval(&pcm);
+                    next_snapshot = next_snapshot.saturating_add(interval);
+                }
                 if pcm.len() >= max_bytes {
                     stop(recorder);
                     break;
@@ -218,6 +339,47 @@ mod tests {
                 "rate missing: {candidate:?}"
             );
         }
+    }
+
+    /// A recorder that never writes a byte and never exits: without the
+    /// kill watchdog, `read` would block forever (no bytes means no byte
+    /// cap, and the stop check only runs between reads).
+    fn silent_recorder_argv() -> Vec<String> {
+        vec!["sleep".into(), "30".into()]
+    }
+
+    #[test]
+    fn guarded_recorder_deadline_ends_a_silent_capture() {
+        let mut recorder = start_guarded(
+            &silent_recorder_argv(),
+            Instant::now() + Duration::from_millis(300),
+            Arc::new(|| false),
+        )
+        .expect("spawn sleep");
+        let pcm = read_all(&mut recorder, 1 << 20, None).expect("read");
+        assert!(pcm.is_empty(), "sleep writes no audio");
+        // Dead and reaped: a second reap reports the same exit.
+        let mut guard = recorder
+            .child
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let status = guard.wait().expect("reap");
+        assert!(!status.success(), "sleep 30 must have been killed");
+    }
+
+    #[test]
+    fn guarded_recorder_kill_signal_ends_a_silent_capture() {
+        let kill = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = Arc::clone(&kill);
+        let mut recorder = start_guarded(
+            &silent_recorder_argv(),
+            Instant::now() + Duration::from_secs(60),
+            Arc::new(move || flag.load(std::sync::atomic::Ordering::Relaxed)),
+        )
+        .expect("spawn sleep");
+        kill.store(true, std::sync::atomic::Ordering::Relaxed);
+        let pcm = read_all(&mut recorder, 1 << 20, None).expect("read");
+        assert!(pcm.is_empty());
     }
 
     #[test]
@@ -302,6 +464,59 @@ mod tests {
         let mut recorder = start(&argv).expect("spawn cat");
         let stream = read_all(&mut recorder, 1024, None).expect("read stdout");
         assert!(stream.len() >= 1024 && stream.len() < 4096 + 8192);
+        drop(recorder);
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn read_live_snapshots_the_accumulated_stream() {
+        let path = unique_temp_path();
+        let pcm = vec![0xCDu8; 4096];
+        fs::write(&path, &pcm).expect("write fixture");
+        let argv = ["cat".to_string(), path.to_string_lossy().into_owned()];
+        let mut recorder = start(&argv).expect("spawn cat");
+        let mut snapshots = Vec::new();
+        let stream = read_live(&mut recorder, usize::MAX, 1024, None, |chunk| {
+            snapshots.push(chunk.len());
+        })
+        .expect("read stdout");
+        assert_eq!(stream, pcm);
+        assert_eq!(
+            snapshots, [4096; 4],
+            "cat emits one read; thresholds still pace callbacks"
+        );
+        drop(recorder);
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn read_live_honours_stop_and_the_byte_cap() {
+        let path = unique_temp_path();
+        fs::write(&path, b"").expect("touch fixture");
+        let argv = ["yes".to_string(), "ior".to_string()];
+        let mut recorder = start(&argv).expect("spawn yes");
+        let stream = read_live(&mut recorder, usize::MAX, 1024, Some(&|| true), |_| {
+            panic!("a stopped recorder must not snapshot");
+        })
+        .expect("read");
+        assert!(stream.is_empty());
+        drop(recorder);
+
+        let path = unique_temp_path();
+        let pcm = vec![0xEFu8; 4096];
+        fs::write(&path, &pcm).expect("write fixture");
+        let argv = ["cat".to_string(), path.to_string_lossy().into_owned()];
+        let mut recorder = start(&argv).expect("spawn cat");
+        let mut snapshots = 0;
+        let stream =
+            read_live(&mut recorder, 2048, 1024, None, |_| snapshots += 1).expect("read stdout");
+        assert_eq!(stream.len(), 4096);
+        assert_eq!(
+            snapshots, 4,
+            "the cap is checked after the read that crossed it"
+        );
         drop(recorder);
 
         let _ = fs::remove_file(&path);

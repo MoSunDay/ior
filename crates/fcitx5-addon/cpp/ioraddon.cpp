@@ -351,6 +351,7 @@ void IorEngine::reset(const fcitx::InputMethodEntry& /*entry*/,
                       fcitx::InputContextEvent& event) {
     exitDeleteMode();
     voiceHotkeyDown_ = false; // a release may have been lost on refocus
+    voicePartial_.clear();    // a stale live preedit must not survive refocus
     if (raw_ != nullptr) {
         ior_engine_reset(raw_);
     }
@@ -363,19 +364,36 @@ void IorEngine::updateUI(fcitx::InputContext& ic) {
     }
     auto& panel = ic.inputPanel();
     const uint32_t voiceState = ior_engine_voice_state(raw_);
-    // Copy the FFI string before other ior_* calls (lifetime rule).
+    // Copy FFI strings before other ior_* calls (lifetime rule).
     const std::string preedit = ior_engine_preedit(raw_);
-    if (preedit.empty() && voiceState == 0) {
+    const std::string partial = ior_engine_voice_partial_text(raw_);
+    if (preedit.empty() && partial.empty() && voiceState == 0) {
         panel.reset();
     } else {
         std::string line = preedit;
         if (voiceState != 0) {
-            // While listening/transcribing the panel shows a status hint
-            // instead of the (empty) composition preedit.
+            // While listening/transcribing the panel shows a status hint;
+            // live mode replaces the preedit with the growing provisional
+            // transcript and moves that hint to the aux line. Copy the
+            // hotkey label before any other ior_* call (FFI lifetime rule).
             const std::string hotkey = ior_engine_voice_hotkey_name(raw_);
-            line = voiceState == 1 ? "[voice] listening... press " + hotkey +
-                                         " again to cancel"
-                                   : "[voice] transcribing...";
+            const uint32_t hotkeyMode = ior_engine_voice_hotkey_mode(raw_);
+            std::string hint;
+            if (voiceState != 1) {
+                hint = "[voice] transcribing... press " + hotkey + " to cancel";
+            } else if (hotkeyMode != 0) {
+                // hold mode ignores recording presses; release stops.
+                hint = "[voice] listening... release to stop and transcribe";
+            } else {
+                hint = "[voice] listening... press " + hotkey +
+                       " again to stop and transcribe";
+            }
+            if (!partial.empty()) {
+                panel.setAuxUp(fcitx::Text(hint));
+                line = partial;
+            } else {
+                line = hint;
+            }
         }
         panel.setPreedit(
             fcitx::Text(line, fcitx::TextFormatFlag::Underline));
@@ -492,16 +510,21 @@ bool IorEngine::handleVoiceHotkey(fcitx::InputContext* ic,
     if (!keyEvent.isRelease()) {
         if (voiceHotkeyDown_) {
             // Auto-repeat press (no release in between): swallow it or a
-            // held toggle hotkey flips once per repeat and ends on a
-            // random phase — cancel would restart recording.
+            // held toggle hotkey advances the phase once per repeat and
+            // ends on a random phase (stop, then cancel).
             keyEvent.filterAndAccept();
             return true;
         }
         voiceHotkeyDown_ = true;
-        // toggle: idle -> record, active -> cancel.
-        // hold: start when idle, otherwise ignore the repeat press.
-        if (!hold || ior_engine_voice_state(raw_) == 0) {
+        // toggle: idle -> recording, second press stops + transcribes;
+        // a press while transcribing cancels. hold: start when idle; a
+        // press while transcribing cancels; the release path stops
+        // recording, so recording presses are ignored.
+        const uint32_t voiceState = ior_engine_voice_state(raw_);
+        if (!hold || voiceState == 0) {
             ior_engine_voice_toggle(raw_);
+        } else if (voiceState == 2) {
+            ior_engine_voice_cancel(raw_);
         }
     } else if (hold && ior_engine_voice_state(raw_) == 1) {
         ior_engine_voice_stop(raw_); // release stops + transcribes
@@ -509,7 +532,7 @@ bool IorEngine::handleVoiceHotkey(fcitx::InputContext* ic,
         return false; // releases in toggle mode are not ours
     }
     keyEvent.filterAndAccept();
-    pollVoice(); // pick up an immediate cancel transition
+    pollVoice(); // pick up an immediate stop/cancel transition
     updateUI(*ic);
     return true;
 }
@@ -520,12 +543,35 @@ void IorEngine::pollVoice() {
     if (raw_ == nullptr) {
         return;
     }
+    // Copy before poll: a Final event clears the partial in the runtime.
+    const uint32_t state = ior_engine_voice_state(raw_);
+    const std::string partial = ior_engine_voice_partial_text(raw_);
+    const bool partialChanged = partial != voicePartial_;
+    if (state == 0) {
+        voicePartial_.clear();
+    } else {
+        voicePartial_ = partial;
+    }
     if (ior_engine_voice_poll(raw_) != 1) {
+        // Repaint on a real change: a new live partial, or the runtime
+        // folding back to idle (worker error or cancel) — otherwise the
+        // last "[voice] ..." status line, painted as the preedit, would
+        // linger on the panel until an unrelated key event.
+        if (lastIc_ != nullptr &&
+            (partialChanged ||
+             (state != 0 && ior_engine_voice_state(raw_) == 0))) {
+            updateUI(*lastIc_);
+        }
         return;
     }
     // Copy before any other ior_* call (FFI lifetime rule).
     const std::string text = ior_engine_voice_take_text(raw_);
     if (text.empty()) {
+        // An empty final transcript (e.g. silence) still ends the voice
+        // phase: repaint so the status hint leaves the panel.
+        if (lastIc_ != nullptr) {
+            updateUI(*lastIc_);
+        }
         return;
     }
     if (ior_engine_preedit(raw_)[0] != '\0') {

@@ -3,6 +3,6 @@ name = "voice"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "ior voice pipeline (phase 2): capture/VAD/streaming ASR planning"
+description = "ior voice pipeline: capture, local SenseVoice, remote Qwen ASR"
 
 [dependencies]

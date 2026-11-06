@@ -1,42 +1,109 @@
-//! Voice worker thread body: resolve the recorder, stream raw PCM until
-//! stop/EOF/cap, wrap a WAV, POST it to the ASR service, optionally
+//! Voice worker thread body: resolves the recorder, stream raw PCM until
+//! stop/EOF/cap, wrap a WAV, walk the frozen ASR engine chain, optionally
 //! polish the transcript through the LLM endpoint. Every failure is a
 //! one-line `Err` for the journal; the runtime folds back to `Idle`.
 
+use crate::voice_live;
 use crate::voice_state::{PolishSettings, VoiceSettings, WorkerSignals};
+use std::sync::mpsc::Sender;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 use voice::asr;
 use voice::capture;
+use voice::engine;
 use voice::http::{self, Post};
 use voice::json;
 
-/// Runs one utterance end to end. `signals.stopped()` ends the capture
-/// loop (transcription continues); `signals.cancelled()` aborts with
-/// `Err("cancelled")` and the runtime discards the result.
-pub fn run(settings: &VoiceSettings, signals: &WorkerSignals) -> Result<String, String> {
+/// One worker-to-runtime message. `Partial` is provisional display text
+/// (never committed); `Final` ends the utterance exactly like the batch
+/// worker's old one-shot result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VoiceEvent {
+    /// Latest trailing-window transcript while capture continues.
+    Partial(String),
+    /// Authoritative transcript (or the utterance error).
+    Final(Result<String, String>),
+}
+
+/// Worker entry used by the runtime: live mode streams partials through
+/// `tx` before its one `Final`; batch mode sends only `Final`.
+pub fn run_event(settings: &VoiceSettings, signals: &Arc<WorkerSignals>, tx: &Sender<VoiceEvent>) {
+    let result = if settings.live {
+        voice_live::run(settings, signals, tx)
+    } else {
+        run(settings, signals)
+    };
+    let _ = tx.send(VoiceEvent::Final(result));
+}
+
+/// Runs one batch utterance end to end. `signals.stopped()` ends the
+/// capture loop (transcription continues); `signals.cancelled()` aborts
+/// with `Err("cancelled")` and the runtime discards the result.
+pub fn run(settings: &VoiceSettings, signals: &Arc<WorkerSignals>) -> Result<String, String> {
+    let mut recorder = start_recorder(settings, signals)?;
+    let max_bytes = max_capture_bytes(settings);
+    let stream = capture::read_all(&mut recorder, max_bytes, Some(&|| signals.stopped()))
+        .map_err(|err| format!("capture read: {err}"))?;
+    drop(recorder); // kill + reap even on error paths
+    transcribe_stream(settings, &stream, signals)
+}
+
+/// Slack over `max_duration_ms` before the recorder kill-watchdog fires.
+/// The byte cap ends healthy recordings right at the max duration; this
+/// only bounds recorders that never write a byte at all.
+const RECORDER_DEADLINE_GRACE: Duration = Duration::from_secs(5);
+
+/// Resolves and spawns the configured capture command behind a kill
+/// watchdog: a recorder that never writes a byte blocks the worker's
+/// `read` forever (the runtime would stay in Recording/Transcribing and
+/// the panel hint would never clear), so the child is killed at the
+/// auto-stop deadline or as soon as stop/cancel is signalled —
+/// whichever comes first.
+pub(crate) fn start_recorder(
+    settings: &VoiceSettings,
+    signals: &Arc<WorkerSignals>,
+) -> Result<capture::Recorder, String> {
     let argv = capture::resolve_capture_command(&settings.capture_command, settings.sample_rate)
         .ok_or_else(|| {
             "no recorder: install pipewire/pulseaudio-utils/alsa-utils \
              or set voice.capture_command"
                 .to_string()
         })?;
-    let mut recorder =
-        capture::start(&argv).map_err(|err| format!("capture spawn {}: {err}", argv[0]))?;
-    let max_bytes = max_capture_bytes(settings);
-    let stream = capture::read_all(&mut recorder, max_bytes, Some(&|| signals.stopped()))
-        .map_err(|err| format!("capture read: {err}"))?;
-    drop(recorder); // kill + reap even on error paths
+    let deadline = Instant::now()
+        + Duration::from_millis(u64::from(settings.max_duration_ms))
+        + RECORDER_DEADLINE_GRACE;
+    let hot = Arc::clone(signals);
+    let should_kill: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(move || hot.stopped());
+    capture::start_guarded(&argv, deadline, should_kill)
+        .map_err(|err| format!("capture spawn {}: {err}", argv[0]))
+}
+
+/// Turns a captured stdout stream (raw PCM or a WAV container) into the
+/// final, committed transcript.
+pub(crate) fn transcribe_stream(
+    settings: &VoiceSettings,
+    stream: &[u8],
+    signals: &WorkerSignals,
+) -> Result<String, String> {
     if signals.cancelled() {
         return Err("cancelled".to_string());
     }
     if stream.is_empty() {
         return Err("captured no audio (silent recorder?)".to_string());
     }
-    let pcm = capture::strip_wav_header(&stream)?;
+    let pcm = capture::strip_wav_header(stream)?;
     let wav = capture::wav_bytes(pcm, settings.sample_rate);
-    let transcript = asr::transcribe(&settings.asr, &wav)?;
+    let transcription =
+        engine::transcribe_best_with_cancel(&settings.asr, &wav, &|| signals.cancelled())?;
+    for line in &transcription.journal {
+        eprintln!("ior: {line}");
+    }
     // ASR models frequently answer `language=zh` in traditional script
     // (whisper-small does); commit simplified like the rest of the IME.
-    let transcript = simplify_transcript(&transcript);
+    let transcript = simplify_transcript(&transcription.text);
+    if signals.cancelled() {
+        return Err("cancelled".to_string());
+    }
     match &settings.polish {
         None => Ok(transcript),
         Some(polish) => Ok(
@@ -51,7 +118,7 @@ pub fn run(settings: &VoiceSettings, signals: &WorkerSignals) -> Result<String, 
 /// Normalizes a transcript to simplified hanzi through the vendored
 /// OpenCC tables. Malformed vendored data (impossible in practice) falls
 /// back to the raw transcript.
-fn simplify_transcript(transcript: &str) -> String {
+pub(crate) fn simplify_transcript(transcript: &str) -> String {
     use std::sync::OnceLock;
     static TABLES: OnceLock<Option<t2s::Simplifier>> = OnceLock::new();
     match TABLES.get_or_init(|| t2s::bundled().ok()) {
@@ -62,7 +129,7 @@ fn simplify_transcript(transcript: &str) -> String {
 
 /// s16 mono = 2 bytes/sample; the cap is the configured max duration
 /// plus one chunk of slack so the auto-stop is not sample-exact.
-fn max_capture_bytes(settings: &VoiceSettings) -> usize {
+pub(crate) fn max_capture_bytes(settings: &VoiceSettings) -> usize {
     let bytes_per_sec = u64::from(settings.sample_rate) * 2;
     let cap = bytes_per_sec * u64::from(settings.max_duration_ms) / 1_000;
     cap.saturating_add(8192) as usize
@@ -109,11 +176,12 @@ mod tests {
         config.voice.capture_command = capture_command.to_string();
         config.llm.asr.endpoint = "http://127.0.0.1:1/v1/audio/transcriptions".into();
         config.llm.asr.timeout_ms = 500;
+        config.voice.asr.engine = ior_config::AsrEngineMode::Remote;
         settings_from_config(&config)
     }
 
-    fn fresh_signals() -> WorkerSignals {
-        WorkerSignals::new()
+    fn fresh_signals() -> Arc<WorkerSignals> {
+        Arc::new(WorkerSignals::new())
     }
 
     #[test]
@@ -157,7 +225,7 @@ mod tests {
         // A local listener that must never see a connection.
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = listener.local_addr().unwrap().port();
-        let signals = WorkerSignals::new();
+        let signals = Arc::new(WorkerSignals::new());
         signals.cancel(); // cancelled before it starts
         let err = run(
             &settings(&format!("cat /dev/null #{port}-never-used")),
@@ -173,10 +241,101 @@ mod tests {
     }
 
     #[test]
+    fn cancel_during_a_slow_local_engine_skips_the_remote_fallback() {
+        use std::fs;
+        use std::net::TcpListener;
+        use std::time::Duration;
+        use voice::asr::AsrSettings;
+        use voice::capture;
+        use voice::engine::EngineConfig;
+        use voice::sensevoice::SenseVoiceSettings;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        listener.set_nonblocking(true).expect("nonblocking");
+
+        let base = std::env::temp_dir().join(format!("ior-voice-cancel-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).expect("temp dir");
+        let wav_path = base.join("fixture.wav");
+        fs::write(&wav_path, capture::wav_bytes(&[0u8; 320], 16_000)).expect("wav");
+        let started = base.join("local-started");
+
+        let mut settings = settings(&format!("cat {}", wav_path.display()));
+        settings.asr = vec![
+            EngineConfig::SenseVoice(SenseVoiceSettings {
+                argv: vec![
+                    "sh".into(),
+                    "-c".into(),
+                    format!("touch '{}'; sleep 1; exit 1", started.display()),
+                ],
+                model_dir: base.clone(),
+                num_threads: 1,
+                timeout_ms: 5_000,
+            }),
+            EngineConfig::Remote(AsrSettings {
+                endpoint: format!("http://127.0.0.1:{port}/v1/audio/transcriptions"),
+                model: "Qwen/Qwen3-ASR-4B".to_string(),
+                api_key_env: "IOR_ASR_TEST_KEY".to_string(),
+                language: "zh".to_string(),
+                timeout_ms: 500,
+            }),
+        ];
+        let signals = Arc::new(WorkerSignals::new());
+        let err = std::thread::scope(|scope| {
+            let worker = scope.spawn(|| run(&settings, &signals));
+            for _ in 0..200 {
+                if started.exists() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert!(started.exists(), "slow local engine never started");
+            signals.cancel();
+            worker.join().expect("worker")
+        })
+        .unwrap_err();
+        assert_eq!(err, "cancelled");
+        match listener.accept() {
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {}
+            other => panic!("remote must not be attempted after cancellation: {other:?}"),
+        }
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
     fn empty_capture_is_an_error_not_an_upload() {
         let signals = fresh_signals();
         let err = run(&settings("cat /dev/null"), &signals).unwrap_err();
         assert!(err.contains("no audio"), "{err}");
+    }
+
+    #[test]
+    fn worker_transcribes_through_a_frozen_local_engine() {
+        use std::fs;
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use voice::engine::EngineConfig;
+        use voice::sensevoice::SenseVoiceSettings;
+
+        static SEQ: AtomicU32 = AtomicU32::new(0);
+        let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+        let base =
+            std::env::temp_dir().join(format!("ior-voice-worker-{}-{seq}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).expect("temp dir");
+        let wav_path = base.join("fixture.wav");
+        fs::write(&wav_path, capture::wav_bytes(&[0u8; 320], 16_000)).expect("wav");
+
+        let mut settings = settings(&format!("cat {}", wav_path.display()));
+        settings.asr = vec![EngineConfig::SenseVoice(SenseVoiceSettings {
+            argv: vec!["sh".into(), "-c".into(), "echo 你好".into()],
+            model_dir: base.clone(),
+            num_threads: 1,
+            timeout_ms: 2_000,
+        })];
+        let signals = fresh_signals();
+        assert_eq!(run(&settings, &signals).unwrap(), "你好");
+        let _ = fs::remove_dir_all(base);
     }
 
     #[test]
