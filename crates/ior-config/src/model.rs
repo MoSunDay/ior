@@ -85,7 +85,8 @@ impl DoublePinyin {
 /// `voice.hotkey_mode`: how the voice hotkey interacts with recording.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HotkeyMode {
-    /// `"toggle"`: press starts recording, the next press cancels it.
+    /// `"toggle"`: press starts recording, the next press stops capture
+    /// and transcribes; pressing again while transcribing cancels.
     #[default]
     Toggle,
     /// `"hold"`: press starts, release stops and transcribes
@@ -107,6 +108,39 @@ impl HotkeyMode {
         match text {
             "toggle" => Some(HotkeyMode::Toggle),
             "hold" | "push_to_talk" | "push-to-talk" => Some(HotkeyMode::Hold),
+            _ => None,
+        }
+    }
+}
+
+/// `voice.asr.engine`: ASR engine selection policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AsrEngineMode {
+    /// `"auto"`: probe local SenseVoice, then fall back to remote.
+    #[default]
+    Auto,
+    /// `"sensevoice"`: prefer the local sherpa-onnx CLI.
+    SenseVoice,
+    /// `"remote"`: only `[llm.asr]`.
+    Remote,
+}
+
+impl AsrEngineMode {
+    /// Canonical TOML string.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AsrEngineMode::Auto => "auto",
+            AsrEngineMode::SenseVoice => "sensevoice",
+            AsrEngineMode::Remote => "remote",
+        }
+    }
+
+    /// Parses one of `"auto"` | `"sensevoice"` | `"remote"`.
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "auto" => Some(AsrEngineMode::Auto),
+            "sensevoice" => Some(AsrEngineMode::SenseVoice),
+            "remote" => Some(AsrEngineMode::Remote),
             _ => None,
         }
     }
@@ -196,6 +230,15 @@ pub struct Voice {
     pub sample_rate: u32,
     /// Hard cap on one utterance; auto-stop transcribes afterwards.
     pub max_duration_ms: u32,
+    /// `voice.live`: show provisional transcripts while recording. The
+    /// ASR service is batch-only, so partials are trailing-window
+    /// re-transcriptions; the final full decode still happens on stop.
+    pub live: bool,
+    /// `voice.live_interval_ms`: audio interval between live partial
+    /// transcriptions (clamped by the schema to 500..=10000).
+    pub live_interval_ms: u32,
+    /// `[voice.asr]`: engine selection and local SenseVoice knobs.
+    pub asr: VoiceAsr,
 }
 
 impl Default for Voice {
@@ -207,6 +250,40 @@ impl Default for Voice {
             capture_command: "auto".to_string(),
             sample_rate: 16_000,
             max_duration_ms: 60_000,
+            live: false,
+            live_interval_ms: 2_000,
+            asr: VoiceAsr::default(),
+        }
+    }
+}
+
+/// The `[voice.asr]` section: engine chain selection. `[llm.asr]` stays
+/// the remote endpoint's own settings for compatibility.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VoiceAsr {
+    /// `auto` (local first, remote fallback) | `sensevoice` | `remote`.
+    pub engine: AsrEngineMode,
+    /// Degrade to the next engine when the preferred one fails.
+    pub fallback: bool,
+    /// `"auto"` probes `sherpa-onnx-offline`; otherwise argv on spaces.
+    pub sensevoice_command: String,
+    /// `"auto"` probes the XDG data dir; otherwise an explicit path.
+    pub sensevoice_model_dir: String,
+    /// `--num-threads` for the CPU int8 model.
+    pub sensevoice_threads: u32,
+    /// Wall-clock timeout for one local CLI invocation.
+    pub timeout_ms: u32,
+}
+
+impl Default for VoiceAsr {
+    fn default() -> Self {
+        VoiceAsr {
+            engine: AsrEngineMode::default(),
+            fallback: true,
+            sensevoice_command: "auto".to_string(),
+            sensevoice_model_dir: "auto".to_string(),
+            sensevoice_threads: 2,
+            timeout_ms: 20_000,
         }
     }
 }
@@ -420,6 +497,34 @@ pub fn to_table(config: &Config) -> Table {
         "max_duration_ms".into(),
         Value::Int(i64::from(config.voice.max_duration_ms)),
     );
+    voice.insert("live".into(), Value::Bool(config.voice.live));
+    voice.insert(
+        "live_interval_ms".into(),
+        Value::Int(i64::from(config.voice.live_interval_ms)),
+    );
+    let mut voice_asr = Table::new();
+    voice_asr.insert(
+        "engine".into(),
+        Value::Str(config.voice.asr.engine.as_str().to_string()),
+    );
+    voice_asr.insert("fallback".into(), Value::Bool(config.voice.asr.fallback));
+    voice_asr.insert(
+        "sensevoice_command".into(),
+        Value::Str(config.voice.asr.sensevoice_command.clone()),
+    );
+    voice_asr.insert(
+        "sensevoice_model_dir".into(),
+        Value::Str(config.voice.asr.sensevoice_model_dir.clone()),
+    );
+    voice_asr.insert(
+        "sensevoice_threads".into(),
+        Value::Int(i64::from(config.voice.asr.sensevoice_threads)),
+    );
+    voice_asr.insert(
+        "timeout_ms".into(),
+        Value::Int(i64::from(config.voice.asr.timeout_ms)),
+    );
+    voice.insert("asr".into(), Value::Table(voice_asr));
 
     let mut asr = Table::new();
     asr.insert(
@@ -529,10 +634,17 @@ mod tests {
     fn to_table_covers_voice_and_llm() {
         let table = to_table(&Config::default());
         let voice = table.get_table("voice").expect("voice");
-        assert_eq!(voice.len(), 6);
+        assert_eq!(voice.len(), 9);
         assert_eq!(str_of(voice.get("hotkey")), Some("ctrl+grave"));
         assert_eq!(str_of(voice.get("hotkey_mode")), Some("toggle"));
         assert_eq!(int_of(voice.get("sample_rate")), Some(16_000));
+        assert_eq!(bool_of(voice.get("live")), Some(false));
+        assert_eq!(int_of(voice.get("live_interval_ms")), Some(2_000));
+        let voice_asr = voice.get_table("asr").expect("voice.asr");
+        assert_eq!(voice_asr.len(), 6);
+        assert_eq!(str_of(voice_asr.get("engine")), Some("auto"));
+        assert_eq!(bool_of(voice_asr.get("fallback")), Some(true));
+        assert_eq!(int_of(voice_asr.get("sensevoice_threads")), Some(2));
         let llm = table.get_table("llm").expect("llm");
         assert_eq!(llm.len(), 5);
         assert_eq!(bool_of(llm.get("enabled")), Some(false));
@@ -543,6 +655,22 @@ mod tests {
             str_of(asr.get("endpoint")),
             Some("http://node02:8000/v1/audio/transcriptions")
         );
+    }
+
+    #[test]
+    fn asr_engine_strings_roundtrip() {
+        assert_eq!(AsrEngineMode::default(), AsrEngineMode::Auto);
+        for (mode, text) in [
+            (AsrEngineMode::Auto, "auto"),
+            (AsrEngineMode::SenseVoice, "sensevoice"),
+            (AsrEngineMode::Remote, "remote"),
+        ] {
+            assert_eq!(AsrEngineMode::parse(text), Some(mode));
+            assert_eq!(mode.as_str(), text);
+        }
+        assert_eq!(AsrEngineMode::parse("gpu"), None);
+        assert_eq!(VoiceAsr::default().sensevoice_threads, 2);
+        assert!(VoiceAsr::default().fallback);
     }
 
     #[test]

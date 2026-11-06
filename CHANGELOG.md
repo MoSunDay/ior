@@ -4,6 +4,40 @@
 
 ## [Unreleased]
 
+### fix(voice)：ctrl+grave 提示不再长期滞留——卡死录音器可解救，失败/空转写即时清面板
+
+- 症状：按 `ctrl+grave` 后面板出现 `[voice] listening/transcribing...` 提示，
+  可能长期不消失，且录音/转写阶段候选区被刻意隐藏，中文模式看不到候选词。
+- 根因一（状态卡死）：一个从不写出字节的录音器（音频服务卡死、设备被占、
+  自定义命令阻塞）会让 worker 永久阻塞在 `read()`——没有字节就没有字节上限，
+  而停止检查只在两次读之间运行；二按停止、三按取消都无法解除，runtime 永远
+  停在 Recording/Transcribing。现在 `capture::start_guarded` 为录音进程挂上
+  kill 看门狗：到 `max_duration_ms`（+5 s 宽限）或收到 stop/cancel 信号即杀掉
+  子进程（EOF 解除阻塞的读），看门狗随 `Recorder` 析构自动解除武装。
+- 根因二（面板不刷新）：`pollVoice` 只在 live partial 变化或非空转写上屏时
+  重绘；worker 出错/取消折叠回 idle、或转写结果为空时面板保留旧的
+  `[voice] ...` 状态行（它画在 preedit 上），直到下一次无关按键。现在
+  状态离开语音相位（非 0 → 0）或空转写结束时立即重绘。
+- 测试：`capture` 覆盖静默录音器的 deadline 与 kill 信号两条解救路径；
+  `voice_state::stop_unblocks_a_recorder_that_never_writes` 断言二按停止后
+  runtime 回到 idle（修复前该用例死锁）。C ABI 零变化。
+
+### fix(voice)：toggle 二按停止并转写，转写中再按取消
+
+- 默认 `hotkey_mode = "toggle"` 下，`ctrl+grave` 按一次开始录音，再按一次
+  停止采集并转写；转写完成后自动上屏，转写中再按一次取消并丢弃迟到结果。
+  `max_duration_ms` 到点仍会自动停并转写。
+- `hold` 模式保持按住说话、松开停止并转写；hold 转写中按热键同样取消。
+  面板提示按模式区分：toggle 录音中 `again to stop and transcribe`，hold
+  录音中 `release to stop and transcribe`，转写中
+  `transcribing... press … to cancel`。
+- 测试：`voice_state` 覆盖二按停止并转写、转写中取消、hold 录音中 toggle
+  no-op；`toggle_second_press_stops_capture_and_transcribes` 改用慢速采集桩，
+  断言第二按前 ASR 尚未启动、第二按后进入 transcribing 并上屏（不再依赖
+  `/dev/zero` 撞 40 KB 上限）；`toggle_while_transcribing_cancels_without_late_text`
+  断言取消后迟到文本不上屏。README / 部署 / 本地引擎 / 验证文档与 C ABI
+  注释同步。
+
 ### fix(engine)：空格上屏当前页首选——翻页后不再选回第一页的词
 
 - 空格（及 `enter_action = candidate` 的回车）上屏的"首选"从扁平列表
@@ -11,6 +45,48 @@
   页内寻址一致（`session::handle_commit_or_passthrough` 此前忽略
   `s.page`）。页 0 行为不变；详见
   `features/changelog/2026-11-06/space-commits-current-page-top.md`。
+
+### feat(voice)：本地 SenseVoice-Small 接入 + ASR 多引擎（auto 本地优先、远端兜底）
+
+- **本地引擎**：新增 `voice::sensevoice`，通过 shell out
+  `sherpa-onnx-offline` 子进程跑 CPU int8 SenseVoice-Small——与
+  `capture_command` 同款外部进程模式，**零第三方 crate**，不把
+  onnxruntime 链入 fcitx5。模型目录探测 `$IOR_MODELS_DIR` →
+  `$XDG_DATA_HOME/ior/models/sensevoice-small` →
+  `$HOME/.local/share/...`，命令 `"auto"` 探测 PATH、
+  显式值按空格切 argv；临时 WAV 用 `create_new` + Unix `0600`
+  （拒绝复用已有文件/符号链接），`try_wait` 轮询超时 + kill，
+  stdout/stderr 由线程排空避免大 token 列表卡死。
+- **多引擎入口**：新增 `voice::engine` 纯数据枚举 `EnginePolicy` /
+  `EngineConfig` 与 `resolve_chain`：`auto` 探测到本地模型/二进制即
+  `sensevoice -> remote`，探测不到仍是 `remote`（现有用户零行为变化）；
+  `fallback=false` 可关闭降级。`transcribe_best` 逐引擎执行，失败打印
+  一行 `asr engine sensevoice: ...; fallback -> remote` journal，全部失败
+  汇总为 `all ASR engines failed: ...`；新增取消感知的
+  `transcribe_best_with_cancel`，在每个引擎前后与润色前检查取消，取消后
+  不降级、不发起润色。`detect_gpu()` 预留链首 GPU 槽位
+  （当前仅 journal 提示）。
+- **配置**：`[voice.asr]` 新增 `engine`（`auto|sensevoice|remote`）、
+  `fallback`、`sensevoice_command`、`sensevoice_model_dir`、
+  `sensevoice_threads`、`timeout_ms`；`[llm.asr]` 原样保留为远端设置，
+  向后兼容。schema 校验路径/范围，未知键走既有 warning 通道。
+- **addon**：`VoiceSettings.asr` 冻结为 `Vec<EngineConfig>`，启动时一次性
+  探测并打印 `asr engines: ...`；worker 改走
+  `transcribe_best_with_cancel` 并逐条输出降级 journal。FFI/C++ 零 ABI
+  变化。
+- **脚本/文档**：`scripts/download_models.sh --sensevoice` 真下载
+  SenseVoice tar.bz2（GitHub/ModelScope 双源，支持 `IOR_SENSEVOICE_URL`）；
+  新增 `docs/SENSEVOICE-LOCAL.md`（版本钉死、配置矩阵、桩/真机/降级/GPU
+  验证清单）；README 增 `[voice.asr]` 样例与路线图。
+- **不变量影响**：voice crate 仍零依赖；workspace 仍 8 成员；远端路径、
+  t2s 简体化与润色逻辑不变。默认未装模型时 `auto` 打印引擎链一行，再补
+  一行本地不可用提示（至多两行 journal）。
+- **验证**：`cargo fmt` / `cargo build --workspace` / `cargo clippy
+  --workspace --all-targets -- -D warnings` / `cargo test --workspace` /
+  行数门禁全绿；单测覆盖 argv byte-exact、JSON/`Text:` 解析、超时 kill、
+  链解析、首引擎失败次引擎成功、取消传播（不降级、不润色）、https
+  endpoint 拒绝与 worker 桩采集+桩引擎。真实 sherpa-onnx + 模型语音验证
+  按 `docs/SENSEVOICE-LOCAL.md` 清单待人工执行。
 
 ### fix(voice)：语音"关不掉"两根因——toggle 热键自动重复抖动 + 非法热键静默回退默认
 
@@ -235,12 +311,12 @@
 - C++ 薄壳改用该符号路由翻页键（原硬编码 Page_Up/Page_Down），翻页
   保持 core 循环分页语义。
 
-### 语音输入 V1：ctrl+` 按键说话 + node02 远端 Qwen ASR（+可选润色）
+### 语音输入 V1：ctrl+grave 按键说话 + node02 远端 Qwen ASR（+可选润色）
 
 规划与验证记录见 `docs/NODE02-DEPLOY.md`、`docs/VOICE-VERIFY.md`。
 
 #### 语音输入（voice crate，零第三方依赖）
-- 热键解析：`voice::hotkey` 把 `"ctrl+grave"`（别名 `"ctrl+\`"`）等规格
+- 热键解析：`voice::hotkey` 把 `"ctrl+grave"`（别名 `"ctrl+backquote"`）等规格
   解析为 keysym + 与 fcitx5 `KeyStates::toInteger` 位对齐的修饰键掩码
   （Shift 1<<0 / Ctrl 1<<2 / Alt 1<<3 / Super 1<<6）。
 - 采集：`capture_command = "auto"` 依次探测 pw-record → parec → arecord，

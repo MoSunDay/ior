@@ -1,26 +1,32 @@
-//! Voice input for ior (phase 2, V1: hotkey + remote Qwen ASR).
+//! Voice input for ior (phase 2): local SenseVoice first, remote Qwen
+//! fallback.
 //!
 //! Still zero third-party dependencies: capture shells out to the
-//! system recorder (pw-record / parec / arecord), HTTP is a hand-rolled
-//! client over `std::net`, and ASR talks to the OpenAI-compatible
-//! `/v1/audio/transcriptions` endpoint deployed on node02 (see
-//! scripts/deploy-asr-node02.sh and docs/NODE02-DEPLOY.md).
+//! system recorder (pw-record / parec / arecord), local ASR shells out
+//! to `sherpa-onnx-offline`, HTTP is a hand-rolled client over
+//! `std::net`, and the remote engine talks to the OpenAI-compatible
+//! `/v1/audio/transcriptions` endpoint on node02.
 //!
 //! - [`hotkey`]: `"ctrl+grave"` to keysym + fcitx5-aligned modifier bits.
 //! - [`capture`]: recorder process, raw-PCM read loop, WAV wrap/unwrap.
+//! - [`sensevoice`]: optional local SenseVoice-Small CLI process.
+//! - [`engine`]: frozen engine chain, fallback execution and GPU probe.
 //! - [`http`]: http://-only POST client (multipart and JSON bodies).
 //! - [`json`]: string escape/extract for the optional polish call.
-//! - [`asr`]: transcription request assembly and text-response handling.
+//! - [`asr`]: remote transcription request assembly and response handling.
 //!
 //! Remaining roadmap (V2-V4): silero VAD gating, streaming bilingual
-//! ASR (sherpa-onnx zipformer), batch re-decode (whisper-rs), and local
-//! model management (see scripts/download_models.sh).
+//! ASR (sherpa-onnx zipformer), batch re-decode (whisper-rs), and a
+//! resident GPU engine slot ahead of the local CPU engine.
 
 pub mod asr;
 pub mod capture;
+pub mod engine;
 pub mod hotkey;
 pub mod http;
 pub mod json;
+pub mod sensevoice;
+mod temp_wav;
 
 /// One downloadable model in the phase-2 voice manifest.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,11 +36,15 @@ pub struct ModelSpec {
     pub approx_size_mb: u32,
 }
 
-/// Planned pipeline stages, capture first, batch fallback last.
+/// Planned pipeline capabilities, capture first, batch fallback last.
+/// This roadmap list is not the runtime engine chain selected by
+/// [`engine::resolve_chain`].
 pub const STAGES: &[&str] = &[
     "capture(cpal/PipeWire)",
     "vad(silero-onnx)",
     "asr-stream(sherpa-onnx zipformer)",
+    "asr-local(sherpa-onnx sensevoice)",
+    "asr-remote(qwen3-asr)",
     "asr-batch(whisper-rs)",
 ];
 
@@ -50,6 +60,11 @@ pub fn pipeline_summary() -> String {
 /// Models the voice pipeline plans to bundle or download in phase 2.
 pub fn default_model_manifest() -> Vec<ModelSpec> {
     vec![
+        ModelSpec {
+            name: "sensevoice-small",
+            role: "asr-local",
+            approx_size_mb: 230,
+        },
         ModelSpec {
             name: "silero-vad",
             role: "vad",
@@ -82,6 +97,10 @@ mod tests {
         let summary = pipeline_summary();
         assert!(summary.contains("vad(silero-onnx)"), "summary: {summary}");
         assert!(
+            summary.contains("asr-local(sherpa-onnx sensevoice)"),
+            "summary: {summary}"
+        );
+        assert!(
             summary.starts_with("capture(cpal/PipeWire)"),
             "summary: {summary}"
         );
@@ -93,9 +112,9 @@ mod tests {
     }
 
     #[test]
-    fn manifest_has_four_models_with_unique_roles() {
+    fn manifest_has_five_models_with_unique_roles() {
         let manifest = default_model_manifest();
-        assert_eq!(manifest.len(), 4);
+        assert_eq!(manifest.len(), 5);
         let mut roles: Vec<&str> = manifest.iter().map(|spec| spec.role).collect();
         let total = roles.len();
         roles.sort_unstable();

@@ -1,10 +1,13 @@
 # node02 语音服务部署（V1：远端 Qwen ASR + 可选润色）
 
-ior V1 的语音输入走**远端推理**：本机只负责按键采集（`pw-record` /
-`parec` / `arecord` → 16 kHz s16le mono），node02 上跑 vLLM 的
-OpenAI 兼容服务完成转写（与可选的 LLM 润色）。模型不进本仓库、
-不进本机（`scripts/download_models.sh` 的本地 onnx/GGUF 清单是 V2+
-的规划）。
+未安装本地模型时，ior V1 的语音输入走**远端推理**：本机负责按键采集
+（`pw-record` / `parec` / `arecord` → 16 kHz s16le mono），node02 上跑 vLLM
+的 OpenAI 兼容服务完成转写（与可选的 LLM 润色）。V1.5 装好本地
+SenseVoice-Small 后 `auto` 本地优先、远端兜底。模型不进本仓库；本地
+SenseVoice-Small 是 V1.5 可选资产（`scripts/download_models.sh --sensevoice`），
+其余 onnx/GGUF 清单仍为 V2+ 规划。`voice.live = true` 可选开启录音期间的
+实时预览：端点本身仍只收**一次完整 multipart WAV**，预览由 ior 客户端按
+间隔重转写 trailing window 合成（见下文本机收尾）。
 
 ## 拓扑与端口
 
@@ -54,10 +57,12 @@ scripts/deploy-asr-node02.sh m@node02 --with-llm
    [voice]
    enabled = true          # 总开关（false 时热键失效）
    hotkey = "ctrl+grave"   # 也可写 "ctrl+`"；ctrl+shift+u 之类同理
-   hotkey_mode = "toggle"  # toggle=再按取消 | hold=按住说话
+   hotkey_mode = "toggle"  # toggle=按下开始，再按停止并转写 | hold=按住说话
    capture_command = "auto"  # auto=探测 pw-record→parec→arecord
    sample_rate = 16000
    max_duration_ms = 60000  # 单次上限，到点自动停并转写
+   live = false             # true=录音期间远端 trailing-window 实时预览
+   live_interval_ms = 2000  # 预览节奏，500..=10000 ms
 
    [llm.asr]               # 转写服务
    endpoint = "http://node02:8000/v1/audio/transcriptions"
@@ -70,6 +75,21 @@ scripts/deploy-asr-node02.sh m@node02 --with-llm
    endpoint = "http://node02:8001/v1/chat/completions"
    model = "Qwen/Qwen2.5-7B-Instruct"
    ```
+
+### `voice.live` 与 batch-only 端点的边界
+
+- vLLM 的 `/v1/audio/transcriptions` 没有 SSE/WebSocket/增量上传；ior 在
+  录音中每 `live_interval_ms` 把**最近 30 s** PCM 重新封装成完整 WAV 上传。
+  30 s 上限对齐 whisper-small `--max-model-len 448` 的部署窗口，最终全量
+  转写不受该截断影响。
+- partial 只用引擎链中第一个 remote 引擎（本地 SenseVoice 每次调用重载
+  模型，跟不上节奏）；请求超时为
+  `min(llm.asr.timeout_ms, max(3 * live_interval_ms, 2000))`。
+- 同一时刻最多一个 partial 请求；忙时跳过本拍。这对 node02 常见的
+  `--max-num-seqs 1` 尤其重要，可避免 partial 队列挤占最终转写。
+- partial 返回后**整体替换**面板预览，可能回改、不保证单调增长；预览仅
+  展示，不会上屏。停止/到点后的最终文本仍由完整音频走多引擎链、润色与
+  一次性 commit 决定。
 
 ## 安全模型（为什么只有 http）
 

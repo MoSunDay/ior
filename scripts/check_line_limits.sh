@@ -17,22 +17,26 @@ done <<FILELIST
 $(find crates -type f \( -name '*.rs' -o -name '*.cpp' -o -name '*.h' -o -name '*.c' \) ! -path '*/build/*')
 FILELIST
 
-# 2) 新增文件 <= 400 行
+# 2) 新增文件 <= 400 行（已跟踪的新增文件 + 尚未 git add 的文件）
 base="${1:-HEAD}"
-if git rev-parse --verify -q "$base" >/dev/null 2>&1; then
-	git diff --name-only --diff-filter=A "$base" -- 2>/dev/null |
-	grep -E '\.(rs|cpp|h|c)$' |
-	while IFS= read -r f; do
-		[ -f "$f" ] || continue
-		lines=$(wc -l < "$f")
-		if [ "$lines" -gt 400 ]; then
-			echo "OVER-400(new vs $base): $f ($lines lines)"
-			fail=1
-		fi
-	done
-else
-	echo "note: base ref '$base' not found, skip new-file check"
-fi
+new_list=$(mktemp "${TMPDIR:-/tmp}/ior-line-limits.XXXXXX")
+trap 'rm -f "$new_list"' EXIT
+{
+	if git rev-parse --verify -q "$base" >/dev/null 2>&1; then
+		git diff --name-only --diff-filter=A "$base" -- 2>/dev/null || true
+	else
+		echo "note: base ref '$base' not found, skip tracked-new-file check" >&2
+	fi
+	git ls-files --others --exclude-standard -- 2>/dev/null || true
+} | grep -E '\.(rs|cpp|h|c)$' | sort -u > "$new_list"
+while IFS= read -r f; do
+	[ -f "$f" ] || continue
+	lines=$(wc -l < "$f")
+	if [ "$lines" -gt 400 ]; then
+		echo "OVER-400(new): $f ($lines lines)"
+		fail=1
+	fi
+done < "$new_list"
 
 [ "$fail" -eq 0 ] && echo "line limits OK"
 exit "$fail"

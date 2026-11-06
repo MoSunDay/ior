@@ -12,6 +12,7 @@
 //! uint32_t ior_engine_voice_stop(IorEngineC*);
 //! uint32_t ior_engine_voice_cancel(IorEngineC*);
 //! uint32_t ior_engine_voice_poll(IorEngineC*);
+//! const char* ior_engine_voice_partial_text(const IorEngineC*);
 //! const char* ior_engine_voice_take_text(IorEngineC*);
 //! ```
 //!
@@ -19,10 +20,16 @@
 //! voice input is disabled or the hotkey spec is dead (`"none"` /
 //! unparsable) — a keysym of 0 never matches a real key).
 //! State codes: 0 idle, 1 recording, 2 transcribing. `toggle` is the
-//! hotkey press (idle -> recording, active -> cancel), `stop` the
-//! `hold`-mode release (recording -> transcribing). `poll` returns 1
-//! exactly once per finished transcript, then `take_text` hands it out
-//! (UTF-8, NUL-terminated, valid until the next `ior_*` call).
+//! hotkey press: idle -> recording; in toggle mode a press while
+//! recording stops capture and starts transcription; a press while
+//! transcribing cancels (either mode); in hold mode a press while
+//! recording is a no-op. `stop` is the `hold`-mode release (recording ->
+//! transcribing). `poll` returns 1 exactly once per finished transcript,
+//! then `take_text` hands it out (UTF-8, NUL-terminated, valid until the
+//! next `ior_*` call). With `voice.live = true`, workers also emit
+//! provisional transcripts while recording: `partial_text` returns the
+//! latest one for display only (empty string when null/idle); it is
+//! never committed and is replaced wholesale on every update.
 
 use std::ffi::c_char;
 
@@ -79,7 +86,9 @@ pub unsafe extern "C" fn ior_engine_voice_hotkey_mods(engine: *const IorEngine) 
 /// `engine` must be null or a live pointer from `ior_engine_new`.
 #[no_mangle]
 pub unsafe extern "C" fn ior_engine_voice_hotkey_mode(engine: *const IorEngine) -> u32 {
-    as_ref(engine).map_or(0, |e| u32::from(e.voice.settings.hold_mode))
+    as_ref(engine).map_or(0, |e| {
+        u32::from(e.voice.settings.enabled && e.voice.settings.hold_mode)
+    })
 }
 
 /// Configured hotkey as text (e.g. `ctrl+\``) for UI hints.
@@ -165,6 +174,21 @@ pub unsafe extern "C" fn ior_engine_voice_take_text(engine: *mut IorEngine) -> *
     }
 }
 
+/// Latest provisional live transcript ("" when none; never null). This is
+/// display-only preedit text — the committed utterance still comes from
+/// `take_text` after `poll`.
+///
+/// # Safety
+///
+/// `engine` must be null or a live pointer from `ior_engine_new`.
+#[no_mangle]
+pub unsafe extern "C" fn ior_engine_voice_partial_text(engine: *const IorEngine) -> *const c_char {
+    match as_ref(engine) {
+        Some(engine) => voice_state::partial_text(&engine.voice).as_ptr().cast(),
+        None => empty_ptr(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -194,6 +218,10 @@ mod tests {
         assert_eq!(unsafe { ior_engine_voice_stop(std::ptr::null_mut()) }, 0);
         assert_eq!(unsafe { ior_engine_voice_cancel(std::ptr::null_mut()) }, 0);
         assert_eq!(unsafe { ior_engine_voice_poll(std::ptr::null_mut()) }, 0);
+        assert_eq!(
+            text(unsafe { ior_engine_voice_partial_text(std::ptr::null()) }),
+            ""
+        );
         assert_eq!(
             text(unsafe { ior_engine_voice_take_text(std::ptr::null_mut()) }),
             ""
