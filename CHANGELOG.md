@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### fix(engine)：空格上屏当前页首选——翻页后不再选回第一页的词
+
+- 空格（及 `enter_action = candidate` 的回车）上屏的"首选"从扁平列表
+  第 0 个改为**当前显示页的第 1 个候选**，与数字选字 / 鼠标点选的
+  页内寻址一致（`session::handle_commit_or_passthrough` 此前忽略
+  `s.page`）。页 0 行为不变；详见
+  `features/changelog/2026-11-06/space-commits-current-page-top.md`。
+
 ### fix(voice)：语音"关不掉"两根因——toggle 热键自动重复抖动 + 非法热键静默回退默认
 
 - **根因一（主症状：取消后又在录音）**：toggle 模式下热键无自动重复
