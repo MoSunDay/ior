@@ -4,6 +4,18 @@
 
 ## [Unreleased]
 
+### feat(voice)：实时预览默认开启——ctrl+grave 一按即实时转写，再按关闭上屏
+
+- `voice.live` 默认 `false` → `true`：按 `ctrl+grave` 开始录音后面板实时
+  显示 provisional 转写（每 `live_interval_ms` 用链上第一个远端引擎
+  trailing-window 重转写，最近 30 s 窗口），再按一次停止并对完整录音走
+  引擎链一次性上屏，转写中再按取消——即"实时获取语音输入、再按关闭"。
+- 链上无远端引擎（纯本地 SenseVoice）时回退为纯 listening 提示（journal
+  一行说明），远端不可达时 partial 静默丢弃、不刷 journal；关预览配
+  `voice.live = false`。README / VOICE-VERIFY 同步。
+- 测试：`cargo test --workspace` 423 passed（voice_settings 断言默认开；
+  runtime 测试首个 partial 间隔前结束，现走 live 路径）。
+
 ### fix(voice)：ctrl+grave 提示不再长期滞留——卡死录音器可解救，失败/空转写即时清面板
 
 - 症状：按 `ctrl+grave` 后面板出现 `[voice] listening/transcribing...` 提示，

@@ -230,9 +230,11 @@ pub struct Voice {
     pub sample_rate: u32,
     /// Hard cap on one utterance; auto-stop transcribes afterwards.
     pub max_duration_ms: u32,
-    /// `voice.live`: show provisional transcripts while recording. The
-    /// ASR service is batch-only, so partials are trailing-window
-    /// re-transcriptions; the final full decode still happens on stop.
+    /// `voice.live`: show provisional transcripts while recording
+    /// (default on). The ASR service is batch-only, so partials are
+    /// trailing-window re-transcriptions by the first remote engine;
+    /// the final full decode still happens on stop. Chains without a
+    /// remote engine degrade to the plain listening hint.
     pub live: bool,
     /// `voice.live_interval_ms`: audio interval between live partial
     /// transcriptions (clamped by the schema to 500..=10000).
@@ -250,7 +252,7 @@ impl Default for Voice {
             capture_command: "auto".to_string(),
             sample_rate: 16_000,
             max_duration_ms: 60_000,
-            live: false,
+            live: true,
             live_interval_ms: 2_000,
             asr: VoiceAsr::default(),
         }
@@ -638,7 +640,7 @@ mod tests {
         assert_eq!(str_of(voice.get("hotkey")), Some("ctrl+grave"));
         assert_eq!(str_of(voice.get("hotkey_mode")), Some("toggle"));
         assert_eq!(int_of(voice.get("sample_rate")), Some(16_000));
-        assert_eq!(bool_of(voice.get("live")), Some(false));
+        assert_eq!(bool_of(voice.get("live")), Some(true));
         assert_eq!(int_of(voice.get("live_interval_ms")), Some(2_000));
         let voice_asr = voice.get_table("asr").expect("voice.asr");
         assert_eq!(voice_asr.len(), 6);

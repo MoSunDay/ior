@@ -1,4 +1,4 @@
-最后验证：2026-11-06 ·（语音波次收尾：SenseVoice 多引擎 + toggle 二按停止转写 + ctrl+grave 提示滞留修复；cargo test --workspace 423 passed）
+最后验证：2026-11-06 ·（语音波次收尾 + live 实时预览默认开；cargo test --workspace 423 passed）
 
 # ior 仓库记忆
 
@@ -29,7 +29,7 @@
 - **纯函数式**：无 class / trait 对象 / 继承（README「仓库规范」）；状态经参数与返回值传递。
 - **行数门禁**：`scripts/check_line_limits.sh`——迭代文件 ≤800 行、新增文件 ≤400 行；CI（.github/workflows/ci.yml）强制 fmt + clippy `-D warnings` + test + 行数。注意 `cpp/ioraddon.cpp` 已 631 行（迭代中文件上限 ≤800，README 已对齐），新增功能优先放 Rust 侧。
 - **用户词典**：`$XDG_DATA_HOME/fcitx5/ior/userdb.tsv`，append-log+快照、30 天半衰；`session::delete_flat` 删除键与 `commit_candidate` 学习键严格镜像（crates/engine-core/src/session.rs、user_dict.rs）。
-- **语音 ASR 引擎链**：`[voice.asr]`（engine/fallback/command/model_dir/threads/timeout）在 addon 启动时经 `voice::engine::resolve_chain` 冻结为 `Vec<EngineConfig>`；`auto` 探测到本地模型+二进制才把 SenseVoice 放链首，否则仅 remote（现有用户零变化）。`transcribe_best` 失败逐级降级并写 journal；`[llm.asr]` 原样是远端设置，ABI/C++ 零变化。本地模型目录按 `$IOR_MODELS_DIR`（若设）→ `$XDG_DATA_HOME/ior/models/sensevoice-small/` → `$HOME/.local/share/...` 探测（需 `model.int8.onnx`+`tokens.txt`），下载 `scripts/download_models.sh --sensevoice`。取消在采集后、每个引擎前后与润色前检查：取消的语音不会再降级或润色，但已开始的子进程/HTTP 请求仍会跑完。零字节录音器（音频服务卡死/设备被占）由 `capture::start_guarded` 的 kill 看门狗兜底：到 `max_duration_ms`+5s 或收到 stop/cancel 即杀子进程以 EOF 解除阻塞的 `read`（否则 runtime 永卡 Recording/Transcribing、候选区被隐藏）；C++ `pollVoice` 在折回 idle 或空转写时必须重绘面板，否则 `[voice] ...` 状态行滞留。热键默认 toggle：按一次进入语音输入（录音），再按一次停止采集并转写，转写中再按取消；上屏由 max_duration_ms 到点自动停并转写（也可二按提前停）。hold 仍是按住说话、松开转写，转写中按热键也取消。
+- **语音 ASR 引擎链**：`[voice.asr]`（engine/fallback/command/model_dir/threads/timeout）在 addon 启动时经 `voice::engine::resolve_chain` 冻结为 `Vec<EngineConfig>`；`auto` 探测到本地模型+二进制才把 SenseVoice 放链首，否则仅 remote（现有用户零变化）。`transcribe_best` 失败逐级降级并写 journal；`[llm.asr]` 原样是远端设置，ABI/C++ 零变化。本地模型目录按 `$IOR_MODELS_DIR`（若设）→ `$XDG_DATA_HOME/ior/models/sensevoice-small/` → `$HOME/.local/share/...` 探测（需 `model.int8.onnx`+`tokens.txt`），下载 `scripts/download_models.sh --sensevoice`。取消在采集后、每个引擎前后与润色前检查：取消的语音不会再降级或润色，但已开始的子进程/HTTP 请求仍会跑完。零字节录音器（音频服务卡死/设备被占）由 `capture::start_guarded` 的 kill 看门狗兜底：到 `max_duration_ms`+5s 或收到 stop/cancel 即杀子进程以 EOF 解除阻塞的 `read`（否则 runtime 永卡 Recording/Transcribing、候选区被隐藏）；C++ `pollVoice` 在折回 idle 或空转写时必须重绘面板，否则 `[voice] ...` 状态行滞留。热键默认 toggle：按一次进入语音输入（录音，`voice.live` 默认 true——面板实时显示远端 trailing-window provisional 转写，无远端引擎则回退纯提示），再按一次停止采集并转写，转写中再按取消；上屏由 max_duration_ms 到点自动停并转写（也可二按提前停）。hold 仍是按住说话、松开转写，转写中按热键也取消。
 - **数据版权**：CC-CEDICT 需 CC-BY-SA 4.0 署名；`*.onnx`/`*.gguf` 不入库（.gitignore、data/README.md）。
 
 ## 构建与测试
